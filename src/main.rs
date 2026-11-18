@@ -68,7 +68,8 @@ fn setup(mut commands: Commands,
     spawn_player(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(0.0, -320.0, 0.0));
 
     spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(-200.0, 320.0, 0.0));
-
     spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(200.0, 320.0, 0.0));
+    spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(200.0, 120.0, 0.0));
+    spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(-200.0, 120.0, 0.0));
 
 }
