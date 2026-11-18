@@ -1,5 +1,7 @@
 use bevy::diagnostic::{Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use crate::enemy::Enemy;
+use crate::player::Player;
 
 #[derive(Component)]
 pub struct FpsText;

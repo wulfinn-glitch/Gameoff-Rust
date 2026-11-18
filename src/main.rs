@@ -52,6 +52,7 @@ fn main() {
 
         // Player systems
         .add_systems(Update, move_player)
+        .add_systems(Update, find_closest_enemy)
 
         // Helper Systems
         .add_systems(Update, calc_direction)

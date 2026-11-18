@@ -1,12 +1,15 @@
+use std::ptr::null;
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::input::ButtonInput;
 use bevy::math::Vec2;
 use bevy::mesh::{Mesh, Mesh2d};
-use bevy::prelude::{Circle, ColorMaterial, Commands, Component, GlobalTransform, KeyCode, MeshMaterial2d, Query, Res, ResMut, Time, Transform};
+use bevy::prelude::{Circle, ColorMaterial, Commands, Component, Entity, Gizmo, Gizmos, GlobalTransform, KeyCode, MeshMaterial2d, Query, Res, ResMut, Time, Transform, With};
 use bevy_rapier2d::dynamics::{GravityScale, LockedAxes, RigidBody};
 use bevy_rapier2d::geometry::Collider;
+use bevy_rapier2d::parry::transformation::utils::transform;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
+use crate::enemy::Enemy;
 
 #[derive(Component)]
 pub struct Player {
@@ -70,4 +73,31 @@ pub fn move_player(
 
         velocity.linvel = target_vel;
     }
+}
+pub fn find_closest_enemy(
+    mut commands: Commands,
+    player_query: Query<&Transform, With<Player>>,
+    enemies_query: Query<(Entity, &Transform), With<Enemy>>,
+    mut gizmos: Gizmos
+){
+    let Ok(player_transform) = player_query.single() else {
+         return;
+    };
+
+    let player_pos = player_transform.translation.truncate();
+
+    let closest_enemy = enemies_query
+        .iter()
+        .min_by(|(_, transform_a), (_, transform_b)| {
+            let dist_a = player_pos.distance_squared(transform_a.translation.truncate());
+            let dist_b = player_pos.distance_squared(transform_b.translation.truncate());
+
+            dist_a.total_cmp(&dist_b)
+        });
+
+    if let Some((enemy_entity, transform)) = closest_enemy {
+        let actual_distance = player_pos.distance(transform.translation.truncate());
+        gizmos.line_2d(player_pos, transform.translation.truncate(), Color::srgb(1.0, 1.0, 1.0));
+    }
+
 }
