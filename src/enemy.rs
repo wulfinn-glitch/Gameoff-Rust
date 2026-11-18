@@ -2,7 +2,7 @@ use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::math::Vec2;
 use bevy::mesh::{Mesh, Mesh2d};
-use bevy::prelude::{Circle, ColorMaterial, Commands, Component, GlobalTransform, MeshMaterial2d, Query, ResMut, Transform, With};
+use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{Ccd, GravityScale, LockedAxes, RigidBody, Velocity};
 use bevy_rapier2d::geometry::Collider;
 use crate::player::Player;
@@ -12,6 +12,9 @@ pub struct Enemy{
     pub velocity: Vec2,
     pub hitbox_radius: f32,
 }
+
+#[derive(Component)]
+pub struct Closest;
 
 impl Default for Enemy{
     fn default() -> Self{

@@ -15,6 +15,8 @@ bevy_pretty_text = "0.4"
 # Speed up your game's frame rate in dev mode
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false

@@ -1,5 +1,6 @@
 use bevy::diagnostic::{Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy_pretty_text::prelude::*;
 use crate::enemy::Enemy;
 use crate::player::Player;
 
@@ -48,4 +49,49 @@ pub fn show_fps(
             }
         }
     }
+}
+
+pub fn spawn_text(mut commands: Commands, mut materials: ResMut<Assets<Rainbow>>) {
+    // Spawn wavy `Text`.
+    commands.spawn((
+        Text2d::new("Hello, World!"),
+        Transform::from_xyz(200.0, 0., 0.),
+        Wave::default(),
+        TextFont::from_font_size(22.0),
+    ));
+
+    // Use the typewriter.
+    commands.spawn((
+        Typewriter::new(12.),
+        Text2d::new("My text is revealed\none glyph at a time"),
+        Transform::from_xyz(0., 200., 0.),
+        TextFont::from_font_size(36.0),
+    ));
+
+    // Spawn a style entity.
+    commands.spawn((
+        PrettyStyle("my_style"),
+        TextFont::from_font_size(48.0),
+        effects![
+            PrettyTextMaterial(materials.add(Rainbow::default())),
+            Wave{
+                frequency: 2.0,
+                height: 0.1,
+                ..default()
+            }
+        ],
+    ));
+
+    // Parse rich text and use custom style.
+    commands.spawn((
+        pretty!("I am |0.5|<0.8>*sniff*|1|<1.2> very [pretty](my_style)!|3|<1>"),
+        Typewriter::new(10.0),
+        TextFont::from_font_size(52.0),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            ..Default::default()
+        },
+    ));
 }

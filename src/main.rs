@@ -5,17 +5,17 @@ pub mod helpers;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use bevy::math::primitives::Circle;
 use bevy::render::RenderPlugin;
 use bevy::render::settings::{PowerPreference, WgpuSettings};
 use bevy::window::{PresentMode, WindowMode, WindowResolution};
 
 use bevy_egui::EguiPlugin;
+use bevy_pretty_text::prelude::*;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-
+use bevy_lunex::{UiLunexIndexPlugin, UiLunexPlugin};
 use player::*;
 use crate::enemy::{calc_direction, Enemy, spawn_enemy};
-use crate::helpers::{setup_fps_counter, show_fps};
+use crate::helpers::{setup_fps_counter, show_fps, spawn_text};
 
 fn main() {
     App::new()
@@ -41,6 +41,7 @@ fn main() {
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0))
         .add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(EguiPlugin::default())
+        .add_plugins(PrettyTextPlugin)
         // .add_plugins(WorldInspectorPlugin::new())
         .insert_resource(ClearColor(Color::srgb(0.08, 0.08, 0.12)))
 
@@ -56,6 +57,8 @@ fn main() {
 
         // Helper Systems
         .add_systems(Update, calc_direction)
+        .add_systems(Update, target_closest_enemy)
+        // .add_systems(Startup, spawn_text)
         .run();
 }
 
