@@ -1,0 +1,18 @@
+[package]
+name = "GameoffRust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.18"
+bevy_vector_shapes = "0.9"
+bevy_egui = "0.39"
+bevy-inspector-egui = "0.36"
+bevy_rapier2d = "0.33.0"
+
+# Speed up your game's frame rate in dev mode
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
