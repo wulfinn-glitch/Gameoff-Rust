@@ -5,9 +5,9 @@ use bevy::input::ButtonInput;
 use bevy::math::Vec2;
 use bevy::mesh::{Mesh, Mesh2d};
 use bevy::prelude::{Circle, ColorMaterial, Commands, Component, ContainsEntity, Entity, Gizmo, Gizmos, GlobalTransform, KeyCode, MeshMaterial2d, Query, Res, ResMut, Time, Transform, With};
+use bevy::tasks::futures_lite::future::or;
 use bevy_rapier2d::dynamics::{GravityScale, LockedAxes, RigidBody};
 use bevy_rapier2d::geometry::Collider;
-use bevy_rapier2d::parry::transformation::utils::transform;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
 use crate::enemy::{Closest, Enemy};
 
@@ -16,7 +16,16 @@ pub struct Player {
     pub velocity: Vec2,
     pub acceleration: Vec2,
     pub speed: f32,
-    pub hitbox_radius: f32
+    pub hitbox_radius: f32,
+    pub locked_on: bool
+}
+
+#[derive(Component)]
+pub struct OrbitalMover {
+    pub target: Vec2,
+    pub distance: f32,
+    pub speed_orbit: f32,
+    pub speed_zoom: f32,
 }
 
 impl Default for Player {
@@ -26,6 +35,18 @@ impl Default for Player {
             acceleration: Vec2::default(),
             speed: 450.0,
             hitbox_radius: 20.0,
+            locked_on: false
+        }
+    }
+}
+
+impl Default for OrbitalMover {
+    fn default() -> Self {
+        Self {
+            target: Vec2::default(),
+            distance: 0.0,
+            speed_orbit: 200.0,
+            speed_zoom: 200.0,
         }
     }
 }
@@ -52,38 +73,81 @@ pub fn spawn_player(
         Velocity::default(),
         Ccd::enabled(),
         Friction::coefficient(0.0),
+        OrbitalMover::default(),
         player,
     ));
 }
 
 pub fn move_player(
-    time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut Velocity, &mut Player)>,
+    mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
+    closest_enemy_query: Query<&Transform, With<Closest>>,
 ) {
-    for (mut velocity, player) in &mut query {
-        let mut direction = Vec2::ZERO;
+    let Ok(target_enemy) = closest_enemy_query.single() else { return; };
 
-        if keys.pressed(KeyCode::KeyW) { direction.y += 1.0; }
-        if keys.pressed(KeyCode::KeyS) { direction.y -= 1.0; }
-        if keys.pressed(KeyCode::KeyA) { direction.x -= 1.0; }
-        if keys.pressed(KeyCode::KeyD) { direction.x += 1.0; }
+    for (transform, mut velocity, player, mut mover) in &mut query {
 
-        let target_vel = direction.normalize_or_zero() * player.speed;
+        // Set target to closest enemy
+        mover.target = target_enemy.translation.truncate();
 
-        velocity.linvel = target_vel;
+        if player.locked_on {
+            let current_pos = transform.translation.truncate();
+            let to_player = current_pos - mover.target;
+            let current_distance = to_player.length();
+
+            if current_distance < 0.001 {
+                continue;
+            }
+
+            // Normalized vec outward from player
+            let dir_outward = to_player / current_distance;
+            let tangent = Vec2::new(-dir_outward.y, dir_outward.x);
+
+            let mut orbit_vel = Vec2::ZERO;
+            if keys.pressed(KeyCode::KeyA){
+                orbit_vel -= tangent * mover.speed_orbit;
+            }
+            if keys.pressed(KeyCode::KeyD){
+                orbit_vel += tangent * mover.speed_orbit;
+            }
+
+            let mut zoom_vel = Vec2::ZERO;
+            if keys.pressed(KeyCode::KeyW) {
+                zoom_vel -= dir_outward * mover.speed_zoom;
+            }
+            if keys.pressed(KeyCode::KeyS) {
+                zoom_vel += dir_outward * mover.speed_zoom;
+            }
+
+            velocity.linvel = orbit_vel + zoom_vel;
+        }
+        else {
+            let mut direction = Vec2::ZERO;
+
+            if keys.pressed(KeyCode::KeyW) { direction.y += 1.0; }
+            if keys.pressed(KeyCode::KeyS) { direction.y -= 1.0; }
+            if keys.pressed(KeyCode::KeyA) { direction.x -= 1.0; }
+            if keys.pressed(KeyCode::KeyD) { direction.x += 1.0; }
+
+            let target_vel = direction.normalize_or_zero() * player.speed;
+            velocity.linvel = target_vel;
+        }
     }
 }
 pub fn find_closest_enemy(
     mut commands: Commands,
-    player_query: Query<&Transform, With<Player>>,
+    player_query: Query<(&Transform, &Player)>,
     enemies_query: Query<(Entity, &Transform), With<Enemy>>,
-    mut gizmos: Gizmos,
     current_closest_query: Query<Entity, With<Closest>>,
 ){
-    let Ok(player_transform) = player_query.single() else {
+    let Ok((player_transform, player)) = player_query.single() else {
          return;
     };
+
+    // Return if player is already locked on to some enemy
+    if player.locked_on {
+        return;
+    }
 
     let player_pos = player_transform.translation.truncate();
 
@@ -109,25 +173,43 @@ pub fn find_closest_enemy(
 
         commands.entity(new_closest).insert(Closest);
     }
-
-    // if let Ok((_, transform)) = enemies_query.get(new_closest) {
-    //     let actual_distance = player_pos.distance(transform.translation.truncate());
-    //     gizmos.line_2d(player_pos, transform.translation.truncate(), Color::srgb(1.0, 1.0, 1.0));
-    // }
 }
 
 pub fn target_closest_enemy(
     closest_enemy_query: Query<&Transform, With<Closest>>,
-    player_query: Query<&Transform, With<Player>>,
+    player_query: Query<(&Transform, &Player)>,
     mut gizmos: Gizmos,
 ) {
-    let Ok(player_transform) = player_query.single() else { return; };
+    let Ok((player_transform, player)) = player_query.single() else { return; };
 
     if let Ok(enemy_transform) = closest_enemy_query.single() {
+        let color = if player.locked_on { Color::srgb(1.0, 0.0, 0.0)} else {Color::srgb(1.0, 1.0, 1.0)};
         gizmos.line(
             player_transform.translation,
             enemy_transform.translation,
-            Color::srgb(1.0, 0.0, 0.0)
+            color
         );
+
+        if player.locked_on{
+            gizmos.circle_2d(
+                enemy_transform.translation.truncate(),
+                (enemy_transform.translation.truncate() - player_transform.translation.truncate()).length(),
+                Color::srgb(0.0, 1.0, 0.0));
+        }
+    }
+}
+
+pub fn lock_unlock_closest_enemy(
+    closest_enemy_query: Query<&Transform, With<Closest>>,
+    mut player_query: Query<(&Transform, &mut Player)>,
+    keys: Res<ButtonInput<KeyCode>>,
+){
+
+    let Ok((_, mut player)) = player_query.single_mut() else { return; };
+    let Ok(enemy_transform) = closest_enemy_query.single() else { return; };
+
+    if keys.just_pressed(KeyCode::KeyE) {
+        player.locked_on = !player.locked_on;
+        println!("Locked on {} to {:?}", player.locked_on, enemy_transform.translation.truncate());
     }
 }

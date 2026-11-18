@@ -58,6 +58,7 @@ fn main() {
         // Helper Systems
         .add_systems(Update, calc_direction)
         .add_systems(Update, target_closest_enemy)
+        .add_systems(Update, lock_unlock_closest_enemy)
         // .add_systems(Startup, spawn_text)
         .run();
 }
