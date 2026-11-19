@@ -1,11 +1,9 @@
-use std::ptr::null;
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::input::ButtonInput;
 use bevy::math::Vec2;
 use bevy::mesh::{Mesh, Mesh2d};
-use bevy::prelude::{Circle, ColorMaterial, Commands, Component, ContainsEntity, Entity, Gizmo, Gizmos, GlobalTransform, KeyCode, MeshMaterial2d, Query, Res, ResMut, Time, Transform, With};
-use bevy::tasks::futures_lite::future::or;
+use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{GravityScale, LockedAxes, RigidBody};
 use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
@@ -17,7 +15,8 @@ pub struct Player {
     pub acceleration: Vec2,
     pub speed: f32,
     pub hitbox_radius: f32,
-    pub locked_on: bool
+    pub locked_on: bool,
+    pub turn_speed: f32,
 }
 
 #[derive(Component)]
@@ -35,7 +34,8 @@ impl Default for Player {
             acceleration: Vec2::default(),
             speed: 450.0,
             hitbox_radius: 20.0,
-            locked_on: false
+            locked_on: false,
+            turn_speed: 40.0,
         }
     }
 }
@@ -82,7 +82,9 @@ pub fn move_player(
     keys: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
     closest_enemy_query: Query<&Transform, With<Closest>>,
+    time: Res<Time>,
 ) {
+    let dt = time.delta_secs();
     let Ok(target_enemy) = closest_enemy_query.single() else { return; };
 
     for (transform, mut velocity, player, mut mover) in &mut query {
@@ -90,17 +92,18 @@ pub fn move_player(
         // Set target to closest enemy
         mover.target = target_enemy.translation.truncate();
 
+        // If Locked on, combat controls
         if player.locked_on {
             let current_pos = transform.translation.truncate();
-            let to_player = current_pos - mover.target;
-            let current_distance = to_player.length();
+            let to_enemy =  mover.target - current_pos;
+            let current_distance = to_enemy.length();
 
             if current_distance < 0.001 {
                 continue;
             }
 
             // Normalized vec outward from player
-            let dir_outward = to_player / current_distance;
+            let dir_outward = -(to_enemy / current_distance);
             let tangent = Vec2::new(-dir_outward.y, dir_outward.x);
 
             let mut orbit_vel = Vec2::ZERO;
@@ -120,7 +123,18 @@ pub fn move_player(
             }
 
             velocity.linvel = orbit_vel + zoom_vel;
+
+            let forward = transform.local_y().xy().normalize();
+            let desired = to_enemy.normalize();
+
+            // Signed angle in radians from `forward` to `desired` around +Z
+            let angle_diff = forward.angle_to(desired);
+
+            // Desired angular velocity to reach `desired` this step, clamped by max speed
+            let desired_angvel = (angle_diff / dt).clamp(-20.0, 20.0);
+            velocity.angvel = desired_angvel;
         }
+        // If Not locked on, movement controls
         else {
             let mut direction = Vec2::ZERO;
 
@@ -129,8 +143,21 @@ pub fn move_player(
             if keys.pressed(KeyCode::KeyA) { direction.x -= 1.0; }
             if keys.pressed(KeyCode::KeyD) { direction.x += 1.0; }
 
-            let target_vel = direction.normalize_or_zero() * player.speed;
+            let desired = direction.normalize_or_zero();
+
+            let target_vel = desired * player.speed;
             velocity.linvel = target_vel;
+
+            if desired.length_squared() < 1e-6 {
+                velocity.angvel = 0.0;
+                continue;
+            }
+
+            // Assuming sprite/collider faces +Y at rotation 0; use `transform.local_x().xy()` if +X
+            let forward = transform.local_y().xy().normalize();
+            let angle_diff = forward.angle_to(desired);
+
+            velocity.angvel = (angle_diff / dt).clamp(-player.turn_speed, player.turn_speed);
         }
     }
 }

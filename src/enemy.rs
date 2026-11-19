@@ -1,3 +1,4 @@
+use std::cmp::min;
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::math::Vec2;
@@ -11,6 +12,8 @@ use crate::player::Player;
 pub struct Enemy{
     pub velocity: Vec2,
     pub hitbox_radius: f32,
+    pub player_detect_dist: f32,
+    pub turn_speed: f32
 }
 
 #[derive(Component)]
@@ -21,28 +24,57 @@ impl Default for Enemy{
         Self{
             velocity: Vec2::default(),
             hitbox_radius: 25.0,
+            player_detect_dist: 200.0, // Also the dist player is at if inside
+            turn_speed: 20.0,
         }
     }
 }
 
-pub fn calc_direction(
-    player_q: Query<&Transform, With<Player>>,
-    enemy_q: Query<&Transform, With<Enemy>>) {
-
+pub fn draw_detect_dist(
+    enemy_q: Query<(&Transform, &Enemy)>,
+    player_q: Query<&Transform, (With<Player>, Without<Enemy>)>,
+    mut gizmos: Gizmos
+) {
     let Ok(player_transform) = player_q.single() else {
         // No or Multiple players
         return;
     };
 
-    let player_pos = player_transform.translation.truncate(); // Vec3 -> Vec2 (truncate)
+    for (enemy_transform, enemy) in enemy_q.iter() {
+        // Get min dist of enemy.player_detect, and actual dist
+        let dist = (enemy_transform.translation.truncate() - player_transform.translation.truncate()).length();
+        let radius = f32::min(dist, enemy.player_detect_dist);
+        gizmos.circle_2d(enemy_transform.translation.truncate(), radius, Color::srgb(0.7, 0.92, 0.95));
+    }
+}
 
-    for enemy_transform in enemy_q.iter() {
-        let enemy_pos = enemy_transform.translation.truncate();
-        let to_enemy = enemy_pos - player_pos;
+pub fn face_player_in_range(
+    player_q: Query<&Transform, With<Player>>,
+    mut enemy_q: Query<(&mut Transform, &Enemy), Without<Player>>,
+    time: Res<Time>
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
 
-        if to_enemy.length_squared() > 0.0{
-            let direction = to_enemy.normalize();
+    let Some(player_transform) = player_q.iter().next() else {
+        return;
+    };
+
+    let player_pos = player_transform.translation.truncate();
+    let facing_axis = Vec2::Y;
+
+    for (mut transform, enemy) in enemy_q.iter_mut() {
+        let to_player = player_pos - transform.translation.truncate();
+        let len_sq = to_player.length_squared();
+
+        if len_sq < 1e-6 || len_sq > enemy.player_detect_dist.powi(2) {
+            continue;
         }
+
+        let target_rot = Quat::from_rotation_arc_2d(facing_axis, to_player.normalize());
+        transform.rotation = transform.rotation.rotate_towards(target_rot, enemy.turn_speed * dt);
     }
 }
 
@@ -61,7 +93,7 @@ pub fn spawn_enemy(
         GlobalTransform::default(),
         Mesh2d(meshes.add(Circle::new(base_enemy.hitbox_radius))),
         MeshMaterial2d(materials.add(Color::srgb(1.0, 0.7, 0.7))),
-        RigidBody::Fixed,
+        RigidBody::KinematicPositionBased,
         GravityScale(0.0),
         Collider::ball(base_enemy.hitbox_radius),
         LockedAxes::ROTATION_LOCKED,

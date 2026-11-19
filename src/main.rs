@@ -14,7 +14,7 @@ use bevy_pretty_text::prelude::*;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_lunex::{UiLunexIndexPlugin, UiLunexPlugin};
 use player::*;
-use crate::enemy::{calc_direction, Enemy, spawn_enemy};
+use crate::enemy::{face_player_in_range, Enemy, spawn_enemy, draw_detect_dist};
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text};
 
 fn main() {
@@ -56,10 +56,11 @@ fn main() {
         .add_systems(Update, find_closest_enemy)
 
         // Helper Systems
-        .add_systems(Update, calc_direction)
+        .add_systems(Update, face_player_in_range)
         .add_systems(Update, target_closest_enemy)
         .add_systems(Update, lock_unlock_closest_enemy)
         // .add_systems(Startup, spawn_text)
+        .add_systems(Update, draw_detect_dist) // Run if debug on
         .run();
 }
 
