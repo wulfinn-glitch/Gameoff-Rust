@@ -1,14 +1,37 @@
+use std::collections::HashMap;
 use bevy::diagnostic::{Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_pretty_text::prelude::*;
-use crate::enemy::Enemy;
-use crate::player::Player;
 
 #[derive(Component)]
 pub struct FpsText;
 
 #[derive(Resource)]
 pub struct FpsUpdateTimer(Timer);
+
+const DOUBLE_PRESS_WINDOW: f32 = 0.25;
+
+#[derive(Resource, Default)]
+pub struct DoublePressTracker {
+    last_pressed: HashMap<KeyCode, f32>,
+}
+
+impl DoublePressTracker {
+    pub fn check(&mut self, key: KeyCode, keys: &ButtonInput<KeyCode>, now: f32) -> bool {
+        if !keys.just_pressed(key) { return false; }
+
+        if let Some(&prev) = self.last_pressed.get(&key) {
+            if now - prev <= DOUBLE_PRESS_WINDOW {
+                self.last_pressed.remove(&key);
+                return true;
+            }
+        }
+
+        self.last_pressed.insert(key, now);
+
+        false
+    }
+}
 
 pub fn setup_fps_counter(mut commands: Commands) {
     commands.insert_resource(

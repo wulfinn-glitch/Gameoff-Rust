@@ -1,6 +1,7 @@
 pub mod player;
 pub mod enemy;
 pub mod helpers;
+pub mod config;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -11,11 +12,10 @@ use bevy::window::{PresentMode, WindowMode, WindowResolution};
 
 use bevy_egui::EguiPlugin;
 use bevy_pretty_text::prelude::*;
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use bevy_lunex::{UiLunexIndexPlugin, UiLunexPlugin};
 use player::*;
+use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
 use crate::enemy::{face_player_in_range, Enemy, spawn_enemy, draw_detect_dist};
-use crate::helpers::{setup_fps_counter, show_fps, spawn_text};
+use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
 
 fn main() {
     App::new()
@@ -39,11 +39,18 @@ fn main() {
         }) )
         .add_plugins(FrameTimeDiagnosticsPlugin::default()) // <--- Required for FPS data
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0))
-        .add_plugins(RapierDebugRenderPlugin::default())
+        .add_plugins(RapierDebugRenderPlugin::default().disabled())
         .add_plugins(EguiPlugin::default())
         .add_plugins(PrettyTextPlugin)
         // .add_plugins(WorldInspectorPlugin::new())
         .insert_resource(ClearColor(Color::srgb(0.08, 0.08, 0.12)))
+        .insert_resource(DoublePressTracker::default())
+        .insert_resource(DebugMode(true))
+        .add_systems(
+            Update,
+            (sync_rapier_debug.run_if(resource_changed::<DebugMode>),
+             toggle_debug_mode)
+        )
 
         .add_systems(Startup, setup)
         .add_systems(Startup, setup_fps_counter)
@@ -76,7 +83,7 @@ fn setup(mut commands: Commands,
 
     spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(-200.0, 320.0, 0.0));
     spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(200.0, 320.0, 0.0));
-    spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(200.0, 120.0, 0.0));
-    spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(-200.0, 120.0, 0.0));
+    spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(0.0, 120.0, 0.0));
+    // spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(-200.0, 120.0, 0.0));
 
 }

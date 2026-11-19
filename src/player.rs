@@ -7,7 +7,9 @@ use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{GravityScale, LockedAxes, RigidBody};
 use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
+use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
+use crate::helpers::DoublePressTracker;
 
 #[derive(Component)]
 pub struct Player {
@@ -19,12 +21,18 @@ pub struct Player {
     pub turn_speed: f32,
 }
 
+#[derive(Default)]
+pub struct DashState {
+    pub timer: Timer,
+    pub direction: Vec2,
+}
+
 #[derive(Component)]
 pub struct OrbitalMover {
     pub target: Vec2,
     pub distance: f32,
     pub speed_orbit: f32,
-    pub speed_zoom: f32,
+    pub step_amount: f32,
 }
 
 impl Default for Player {
@@ -32,7 +40,7 @@ impl Default for Player {
         Self{
             velocity: Vec2::default(),
             acceleration: Vec2::default(),
-            speed: 450.0,
+            speed: 150.0,
             hitbox_radius: 20.0,
             locked_on: false,
             turn_speed: 40.0,
@@ -45,8 +53,8 @@ impl Default for OrbitalMover {
         Self {
             target: Vec2::default(),
             distance: 0.0,
-            speed_orbit: 200.0,
-            speed_zoom: 200.0,
+            speed_orbit: 120.0,
+            step_amount: 700.0,
         }
     }
 }
@@ -64,6 +72,7 @@ pub fn spawn_player(
     // Spawn Player (Lot of Components)
     commands.spawn((
         GlobalTransform::default(),
+        transform,
         Mesh2d(meshes.add(Circle::new(player.hitbox_radius))),
         MeshMaterial2d(materials.add(Color::srgb(0.9, 0.9, 0.9))),
         RigidBody::Dynamic,
@@ -121,6 +130,8 @@ pub fn orbital_movement(
     mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
     closest_enemy_query: Query<&Transform, With<Closest>>,
     time: Res<Time>,
+    mut tracker: ResMut<DoublePressTracker>,
+    mut dash: Local<DashState>,
 ){
 
     let dt = time.delta_secs();
@@ -155,12 +166,25 @@ pub fn orbital_movement(
         orbit_vel += tangent * mover.speed_orbit;
     }
 
-    let mut zoom_vel = Vec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) {
-        zoom_vel -= dir_outward * mover.speed_zoom;
+    // dashing
+    let now = time.elapsed_secs();
+
+    if tracker.check(KeyCode::KeyW, &keys, now) {
+        dash.direction = -dir_outward; // Forward / inward
+        dash.timer = Timer::from_seconds(0.2, TimerMode::Once);
+    } else if tracker.check(KeyCode::KeyS, &keys, now) {
+        dash.direction = dir_outward; // Backward / outward
+        dash.timer = Timer::from_seconds(0.2, TimerMode::Once);
     }
-    if keys.pressed(KeyCode::KeyS) {
-        zoom_vel += dir_outward * mover.speed_zoom;
+
+    let mut zoom_vel = Vec2::ZERO;
+    if !dash.timer.is_finished() {
+        dash.timer.tick(time.delta());
+
+        let remaining = 1.0 - dash.timer.fraction();
+        let ease_out = remaining * remaining;
+
+        zoom_vel = dash.direction * mover.step_amount * ease_out;
     }
 
     velocity.linvel = orbit_vel + zoom_vel;
@@ -221,7 +245,10 @@ pub fn target_closest_enemy(
     closest_enemy_query: Query<&Transform, With<Closest>>,
     player_query: Query<(&Transform, &Player)>,
     mut gizmos: Gizmos,
+    debug_enabled: Res<DebugMode>
 ) {
+    if !debug_enabled.0 { return; }
+
     let Ok((player_transform, player)) = player_query.single() else { return; };
 
     if let Ok(enemy_transform) = closest_enemy_query.single() {
@@ -232,7 +259,7 @@ pub fn target_closest_enemy(
             color
         );
 
-        if player.locked_on{
+        if player.locked_on {
             gizmos.circle_2d(
                 enemy_transform.translation.truncate(),
                 (enemy_transform.translation.truncate() - player_transform.translation.truncate()).length(),

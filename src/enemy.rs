@@ -6,6 +6,7 @@ use bevy::mesh::{Mesh, Mesh2d};
 use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{Ccd, GravityScale, LockedAxes, RigidBody, Velocity};
 use bevy_rapier2d::geometry::Collider;
+use crate::config::DebugMode;
 use crate::player::Player;
 
 #[derive(Component)]
@@ -33,8 +34,11 @@ impl Default for Enemy{
 pub fn draw_detect_dist(
     enemy_q: Query<(&Transform, &Enemy)>,
     player_q: Query<&Transform, (With<Player>, Without<Enemy>)>,
-    mut gizmos: Gizmos
+    mut gizmos: Gizmos,
+    debug_mode: Res<DebugMode>,
 ) {
+    if !debug_mode.0 { return;}
+
     let Ok(player_transform) = player_q.single() else {
         // No or Multiple players
         return;
