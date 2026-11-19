@@ -52,7 +52,8 @@ fn main() {
         .add_systems(Update, show_fps)
 
         // Player systems
-        .add_systems(Update, move_player)
+        .add_systems(Update, normal_movement)
+        .add_systems(Update, orbital_movement)
         .add_systems(Update, find_closest_enemy)
 
         // Helper Systems

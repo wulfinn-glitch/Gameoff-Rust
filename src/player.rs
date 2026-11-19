@@ -78,89 +78,104 @@ pub fn spawn_player(
     ));
 }
 
-pub fn move_player(
+pub fn normal_movement(
     keys: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
     closest_enemy_query: Query<&Transform, With<Closest>>,
     time: Res<Time>,
-) {
+){
     let dt = time.delta_secs();
     let Ok(target_enemy) = closest_enemy_query.single() else { return; };
 
-    for (transform, mut velocity, player, mut mover) in &mut query {
+    let (transform, mut velocity, player, mut mover) = query.iter_mut().next().unwrap();
 
-        // Set target to closest enemy
-        mover.target = target_enemy.translation.truncate();
+    // Return if locked on
+    if player.locked_on {return;}
 
-        // If Locked on, combat controls
-        if player.locked_on {
-            let current_pos = transform.translation.truncate();
-            let to_enemy =  mover.target - current_pos;
-            let current_distance = to_enemy.length();
+    let mut direction = Vec2::ZERO;
 
-            if current_distance < 0.001 {
-                continue;
-            }
+    if keys.pressed(KeyCode::KeyW) { direction.y += 1.0; }
+    if keys.pressed(KeyCode::KeyS) { direction.y -= 1.0; }
+    if keys.pressed(KeyCode::KeyA) { direction.x -= 1.0; }
+    if keys.pressed(KeyCode::KeyD) { direction.x += 1.0; }
 
-            // Normalized vec outward from player
-            let dir_outward = -(to_enemy / current_distance);
-            let tangent = Vec2::new(-dir_outward.y, dir_outward.x);
+    let desired = direction.normalize_or_zero();
 
-            let mut orbit_vel = Vec2::ZERO;
-            if keys.pressed(KeyCode::KeyA){
-                orbit_vel -= tangent * mover.speed_orbit;
-            }
-            if keys.pressed(KeyCode::KeyD){
-                orbit_vel += tangent * mover.speed_orbit;
-            }
+    let target_vel = desired * player.speed;
+    velocity.linvel = target_vel;
 
-            let mut zoom_vel = Vec2::ZERO;
-            if keys.pressed(KeyCode::KeyW) {
-                zoom_vel -= dir_outward * mover.speed_zoom;
-            }
-            if keys.pressed(KeyCode::KeyS) {
-                zoom_vel += dir_outward * mover.speed_zoom;
-            }
-
-            velocity.linvel = orbit_vel + zoom_vel;
-
-            let forward = transform.local_y().xy().normalize();
-            let desired = to_enemy.normalize();
-
-            // Signed angle in radians from `forward` to `desired` around +Z
-            let angle_diff = forward.angle_to(desired);
-
-            // Desired angular velocity to reach `desired` this step, clamped by max speed
-            let desired_angvel = (angle_diff / dt).clamp(-20.0, 20.0);
-            velocity.angvel = desired_angvel;
-        }
-        // If Not locked on, movement controls
-        else {
-            let mut direction = Vec2::ZERO;
-
-            if keys.pressed(KeyCode::KeyW) { direction.y += 1.0; }
-            if keys.pressed(KeyCode::KeyS) { direction.y -= 1.0; }
-            if keys.pressed(KeyCode::KeyA) { direction.x -= 1.0; }
-            if keys.pressed(KeyCode::KeyD) { direction.x += 1.0; }
-
-            let desired = direction.normalize_or_zero();
-
-            let target_vel = desired * player.speed;
-            velocity.linvel = target_vel;
-
-            if desired.length_squared() < 1e-6 {
-                velocity.angvel = 0.0;
-                continue;
-            }
-
-            // Assuming sprite/collider faces +Y at rotation 0; use `transform.local_x().xy()` if +X
-            let forward = transform.local_y().xy().normalize();
-            let angle_diff = forward.angle_to(desired);
-
-            velocity.angvel = (angle_diff / dt).clamp(-player.turn_speed, player.turn_speed);
-        }
+    if desired.length_squared() < 1e-6 {
+        velocity.angvel = 0.0;
+        return;
     }
+
+    // Assuming sprite/collider faces +Y at rotation 0; use `transform.local_x().xy()` if +X
+    let forward = transform.local_y().xy().normalize();
+    let angle_diff = forward.angle_to(desired);
+
+    velocity.angvel = (angle_diff / dt).clamp(-player.turn_speed, player.turn_speed);
 }
+
+pub fn orbital_movement(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
+    closest_enemy_query: Query<&Transform, With<Closest>>,
+    time: Res<Time>,
+){
+
+    let dt = time.delta_secs();
+    let Ok(target_enemy) = closest_enemy_query.single() else { return; };
+
+    let (transform, mut velocity, player, mut mover) = query.iter_mut().next().unwrap();
+
+    // Return if not locked on
+    if !player.locked_on {return;}
+
+    // Set target to closest enemy
+    mover.target = target_enemy.translation.truncate();
+
+    // If Locked on, combat controls
+    let current_pos = transform.translation.truncate();
+    let to_enemy = mover.target - current_pos;
+    let current_distance = to_enemy.length();
+
+    if current_distance < 0.001 {
+        return;
+    }
+
+    // Normalized vec outward from player
+    let dir_outward = -(to_enemy / current_distance);
+    let tangent = Vec2::new(-dir_outward.y, dir_outward.x);
+
+    let mut orbit_vel = Vec2::ZERO;
+    if keys.pressed(KeyCode::KeyA) {
+        orbit_vel -= tangent * mover.speed_orbit;
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        orbit_vel += tangent * mover.speed_orbit;
+    }
+
+    let mut zoom_vel = Vec2::ZERO;
+    if keys.pressed(KeyCode::KeyW) {
+        zoom_vel -= dir_outward * mover.speed_zoom;
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        zoom_vel += dir_outward * mover.speed_zoom;
+    }
+
+    velocity.linvel = orbit_vel + zoom_vel;
+
+    let forward = transform.local_y().xy().normalize();
+    let desired = to_enemy.normalize();
+
+    // Signed angle in radians from `forward` to `desired` around +Z
+    let angle_diff = forward.angle_to(desired);
+
+    // Desired angular velocity to reach `desired` this step, clamped by max speed
+    let desired_angvel = (angle_diff / dt).clamp(-20.0, 20.0);
+    velocity.angvel = desired_angvel;
+}
+
 pub fn find_closest_enemy(
     mut commands: Commands,
     player_query: Query<(&Transform, &Player)>,
