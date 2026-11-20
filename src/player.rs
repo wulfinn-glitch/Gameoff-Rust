@@ -21,10 +21,20 @@ pub struct Player {
     pub turn_speed: f32,
 }
 
-#[derive(Default)]
 pub struct DashState {
     pub timer: Timer,
     pub direction: Vec2,
+    pub dash_time: f32
+}
+
+impl Default for DashState {
+    fn default() -> Self {
+        Self {
+            timer: Timer::default(),
+            direction: Vec2::ZERO,
+            dash_time: 0.3,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -54,7 +64,7 @@ impl Default for OrbitalMover {
             target: Vec2::default(),
             distance: 0.0,
             speed_orbit: 120.0,
-            step_amount: 700.0,
+            step_amount: 500.0,
         }
     }
 }
@@ -74,7 +84,7 @@ pub fn spawn_player(
         GlobalTransform::default(),
         transform,
         Mesh2d(meshes.add(Circle::new(player.hitbox_radius))),
-        MeshMaterial2d(materials.add(Color::srgb(0.9, 0.9, 0.9))),
+        MeshMaterial2d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
         RigidBody::Dynamic,
         GravityScale(0.0),
         Collider::ball(player.hitbox_radius),
@@ -170,11 +180,11 @@ pub fn orbital_movement(
     let now = time.elapsed_secs();
 
     if tracker.check(KeyCode::KeyW, &keys, now) {
-        dash.direction = -dir_outward; // Forward / inward
-        dash.timer = Timer::from_seconds(0.2, TimerMode::Once);
+        dash.direction = -dir_outward;
+        dash.timer = Timer::from_seconds(dash.dash_time, TimerMode::Once);
     } else if tracker.check(KeyCode::KeyS, &keys, now) {
-        dash.direction = dir_outward; // Backward / outward
-        dash.timer = Timer::from_seconds(0.2, TimerMode::Once);
+        dash.direction = dir_outward;
+        dash.timer = Timer::from_seconds(dash.dash_time, TimerMode::Once);
     }
 
     let mut zoom_vel = Vec2::ZERO;
@@ -182,7 +192,7 @@ pub fn orbital_movement(
         dash.timer.tick(time.delta());
 
         let remaining = 1.0 - dash.timer.fraction();
-        let ease_out = remaining * remaining;
+        let ease_out = remaining.powi(2);
 
         zoom_vel = dash.direction * mover.step_amount * ease_out;
     }
@@ -192,10 +202,7 @@ pub fn orbital_movement(
     let forward = transform.local_y().xy().normalize();
     let desired = to_enemy.normalize();
 
-    // Signed angle in radians from `forward` to `desired` around +Z
     let angle_diff = forward.angle_to(desired);
-
-    // Desired angular velocity to reach `desired` this step, clamped by max speed
     let desired_angvel = (angle_diff / dt).clamp(-20.0, 20.0);
     velocity.angvel = desired_angvel;
 }

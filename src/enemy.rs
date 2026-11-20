@@ -14,7 +14,8 @@ pub struct Enemy{
     pub velocity: Vec2,
     pub hitbox_radius: f32,
     pub player_detect_dist: f32,
-    pub turn_speed: f32
+    pub turn_speed: f32,
+    pub preferred_player_range: Vec2, // How far it prefers the player to be
 }
 
 #[derive(Component)]
@@ -27,6 +28,7 @@ impl Default for Enemy{
             hitbox_radius: 25.0,
             player_detect_dist: 200.0, // Also the dist player is at if inside
             turn_speed: 20.0,
+            preferred_player_range: Vec2::new(100.0, 250.0)
         }
     }
 }
