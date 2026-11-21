@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Blob Combat Blueprint: Bevy + Rapier2D</title>
+<style>
+:root{--bg:#faf9f7;--fg:#1f1f1f;--mut:#666;--card:#fff;--line:#e2dfd9;--acc:#b5341f;--code:#f1eee9;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17161a;--fg:#ececec;--mut:#9a98a0;--card:#1f1e23;--line:#33313a;--acc:#ff7a5c;--code:#2a2830}}
+:root[data-theme="dark"]{--bg:#17161a;--fg:#ececec;--mut:#9a98a0;--card:#1f1e23;--line:#33313a;--acc:#ff7a5c;--code:#2a2830}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 18px 64px}
+h1{font-size:1.9rem;margin:.2em 0}h2{font-size:1.3rem;margin:2.2em 0 .3em;border-top:1px solid var(--line);padding-top:1.2em}
+h2 span{color:var(--acc);margin-right:.4em}
+p,li{color:var(--fg)}.mut{color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0;overflow-x:auto}
+.card pre.mermaid{margin:0;text-align:center}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{color:var(--mut);font-weight:600}
+code{background:var(--code);padding:1px 6px;border-radius:5px;font-size:.88em}
+.tag{display:inline-block;background:var(--code);border:1px solid var(--line);border-radius:99px;padding:0 9px;font-size:.8rem;margin:2px 3px 2px 0}
+.rule{border-left:3px solid var(--acc);padding:2px 12px;margin:10px 0;background:var(--card);border-radius:0 8px 8px 0}
+a{color:var(--acc)}
+pre.code{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;margin:10px 0;white-space:pre}
+</style>
+</head>
+<body>
+<main>
+<h1>Blob Combat Blueprint</h1>
+<p class="mut">Sekiro-style parry, dash and strike for a 2D Bevy + Rapier game. Design structure first, then language-agnostic pseudocode with sample values in section 12. Work through the sections in order; each one is a buildable milestone.</p>
+
+<h2><span>1</span>The big picture: four layers, one direction</h2>
+<p>Data flows one way each tick. Nothing downstream ever writes back upstream. That is what keeps the feel deterministic and kills query conflicts like <code>B0001</code>.</p>
+<div class="card"><pre class="mermaid">
+flowchart LR
+  A["1 Input<br/>raw keys, taps"] --> B["2 Intent + Buffer<br/>wants parry / dash / attack"]
+  B --> C["3 State Machine<br/>PlayerState + phase timer"]
+  C --> D["4 Combat + Physics<br/>velocity, hit and parry checks"]
+  D --> E["5 Visual Rig<br/>blob, arcs, VFX, hitstop"]
+  D -. "events: Deflected, Hit, Struck" .-> C
+</pre></div>
+<table>
+<tr><th>Layer</th><th>Bevy schedule</th><th>Owns</th><th>Never does</th></tr>
+<tr><td>Input + Intent</td><td><code>PreUpdate</code> / <code>Update</code></td><td>Raw input, double-tap detection, buffer</td><td>Decide whether an action is legal</td></tr>
+<tr><td>State machine</td><td><code>FixedUpdate</code></td><td>Current state, timers, cancel rules</td><td>Touch velocity or transforms</td></tr>
+<tr><td>Combat + Physics</td><td><code>FixedUpdate</code>, before Rapier step</td><td>Velocities, parry arc test, hit resolution</td><td>Change state directly (emits events instead)</td></tr>
+<tr><td>Visual rig</td><td><code>Update</code> (after interpolation)</td><td>Blob deformation, arcs, particles, screen shake</td><td>Affect gameplay</td></tr>
+</table>
+<div class="rule"><b>Tight-feel rule:</b> run all gameplay in a fixed timestep (e.g. 60 Hz) and measure every window in ticks, not seconds. Parry timing then plays identically at any frame rate.</div>
+
+<h2><span>2</span>Player state machine</h2>
+<p>One enum for the state, one component for the phase timer. No scattered booleans. Every transition goes through a single "can I leave this state?" gate.</p>
+<div class="card"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> Neutral
+  Neutral --> Dashing: dash intent
+  Neutral --> Parrying: parry intent
+  Neutral --> Attacking: attack intent
+  Dashing --> Neutral: dash timer done
+  Dashing --> Parrying: late cancel
+  Dashing --> Attacking: late cancel
+  Parrying --> Neutral: recovery done
+  Parrying --> Parrying: deflect success, instant re-parry
+  Parrying --> Attacking: deflect success, counter
+  Attacking --> Attacking: buffered combo input
+  Attacking --> Neutral: recovery done
+  Neutral --> Staggered: unparried hit
+  Parrying --> Staggered: hit during recovery
+  Attacking --> Staggered: hit
+  Staggered --> Neutral: stun done
+</pre></div>
+<table>
+<tr><th>State</th><th>Movement rule</th><th>Facing</th><th>Cancelable into</th></tr>
+<tr><td>Neutral</td><td>Orbital strafe around target</td><td>Tracks enemy</td><td>Anything</td></tr>
+<tr><td>Dashing</td><td>Ease-out burst, i-frames early</td><td>Locked on enemy</td><td>Parry / Attack in last ~30% only</td></tr>
+<tr><td>Parrying</td><td>Slowed, near-planted</td><td>Locked on enemy</td><td>Parry / Attack only after a successful deflect</td></tr>
+<tr><td>Attacking</td><td>Small forward lunge during windup/active</td><td>Locked at windup start</td><td>Next combo hit (buffered), Dash in recovery</td></tr>
+<tr><td>Staggered</td><td>Knockback impulse, no control</td><td>Free</td><td>Nothing until timer ends</td></tr>
+</table>
+
+<h2><span>3</span>Phase timelines (the heart of the feel)</h2>
+<p>Each state is a strip of phases. Gameplay rules attach to phases, never to the state as a whole.</p>
+<div class="card"><pre class="mermaid">
+flowchart LR
+  subgraph PARRY["Parry"]
+    direction LR
+    P1["Active deflect<br/>~8 ticks<br/>arc test ON"] --> P2["Guard hold<br/>~6 ticks<br/>softer block"] --> P3["Recovery<br/>~10 ticks<br/>vulnerable"]
+  end
+  subgraph ATK["Attack"]
+    direction LR
+    A1["Windup<br/>~6 ticks<br/>readable pull-back"] --> A2["Active slash<br/>~4 ticks<br/>hitbox ON"] --> A3["Recovery<br/>~12 ticks<br/>combo window"]
+  end
+  subgraph DASH["Dash"]
+    direction LR
+    D1["I-frames<br/>~8 ticks"] --> D2["Glide<br/>~8 ticks<br/>cancel window"] --> D3["Settle<br/>~3 ticks"]
+  end
+</pre></div>
+<p class="mut">Tick counts are starting values at 60 Hz. Put every number in one tuning resource so you can adjust live. Shrink the active parry window until it feels demanding but fair, and keep it identical for every enemy attack.</p>
+
+<h2><span>4</span>Parry resolution flow</h2>
+<p>The enemy never "asks permission." It emits a strike; one resolver system decides the outcome in a fixed priority order.</p>
+<div class="card"><pre class="mermaid">
+flowchart TD
+  S["Tentacle in ActiveStrike<br/>tip overlaps player hurt zone"] --> Q1{"Player has<br/>i-frames?"}
+  Q1 -- yes --> M1["Pass through<br/>no damage, optional near-miss FX"]
+  Q1 -- no --> Q2{"State = Parrying<br/>and in Active window?"}
+  Q2 -- no --> Q5{"In Guard hold?"}
+  Q5 -- yes --> B1["Soft block<br/>reduced knockback, no counter window"]
+  Q5 -- no --> H1["Hit<br/>emit Hit event"]
+  Q2 -- yes --> Q3{"Tip inside frontal<br/>parry arc + range?"}
+  Q3 -- no --> H1
+  Q3 -- yes --> R["Deflect<br/>emit Deflected event"]
+  R --> R1["Hitstop on both"]
+  R --> R2["Spark + shockwave VFX"]
+  R --> R3["Recoil impulse on tentacle chain"]
+  R --> R4["Posture damage to monster"]
+  R --> R5["Open cancel window: re-parry or counter"]
+  H1 --> H2["State = Staggered<br/>knockback, hit-react wobble"]
+</pre></div>
+<div class="rule"><b>Check order matters:</b> i-frames, then perfect parry, then guard hold, then hit. A dash that overlaps a parry window should always favor the player.</div>
+
+<h2><span>5</span>Enemy tentacle handshake</h2>
+<p>Give every tentacle its own tiny state machine so the player can read it. The parry check only needs one question: "are you in ActiveStrike?"</p>
+<div class="card"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Telegraph: attack chosen
+  Telegraph --> ActiveStrike: telegraph timer done
+  ActiveStrike --> Recover: strike finished
+  ActiveStrike --> Deflected: parried
+  Deflected --> Recover: recoil done, posture hit applied
+  Recover --> Idle: recover done
+</pre></div>
+<ul>
+<li><b>Telegraph</b> must be visually consistent (brighten, pull back, thicken). Players parry by rhythm, so vary timing between attacks, not the tell.</li>
+<li><b>ActiveStrike</b> exposes tip position and a few segment positions, nothing more. The parry system reads those.</li>
+<li><b>Deflected</b> is a free punish window for the player: extend the enemy's recovery here.</li>
+</ul>
+
+<h2><span>6</span>Input buffer and double-tap</h2>
+<div class="card"><pre class="mermaid">
+flowchart TD
+  K["Key pressed"] --> DT{"Same direction<br/>tapped within ~200 ms?"}
+  DT -- yes --> I1["Intent: Dash(direction)"]
+  DT -- no --> I2["Intent: Parry / Attack / Move"]
+  I1 --> BUF["Buffer slot<br/>intent + press tick"]
+  I2 --> BUF
+  BUF --> T{"Each tick: state allows<br/>this action now?"}
+  T -- yes --> USE["Consume intent<br/>request transition"]
+  T -- no --> AGE{"Age under<br/>~6 to 9 ticks?"}
+  AGE -- yes --> BUF
+  AGE -- no --> DROP["Discard"]
+</pre></div>
+<ul>
+<li>Single buffer slot, newest intent wins. Clear it on successful consume.</li>
+<li>Parry gets priority over Attack if both are buffered.</li>
+<li>Keep movement (strafe axis) out of the buffer; it is a continuous value, not an event.</li>
+</ul>
+
+<h2><span>7</span>Data design (ECS)</h2>
+<table>
+<tr><th>Kind</th><th>Name</th><th>Holds</th></tr>
+<tr><td>Component</td><td>PlayerState</td><td>Enum: Neutral, Dashing, Parrying, Attacking, Staggered</td></tr>
+<tr><td>Component</td><td>PhaseTimer</td><td>Current phase, ticks elapsed, ticks total</td></tr>
+<tr><td>Component</td><td>Invulnerable</td><td>Added during i-frames, removed when done</td></tr>
+<tr><td>Component</td><td>Facing / LockTarget</td><td>Target entity, to_enemy vector</td></tr>
+<tr><td>Component</td><td>Posture (enemy)</td><td>Current, max, regen delay; break opens a finisher window</td></tr>
+<tr><td>Component</td><td>TentacleState</td><td>Idle / Telegraph / ActiveStrike / Deflected / Recover + timer</td></tr>
+<tr><td>Resource</td><td>InputBuffer</td><td>Pending intent, press tick, last tap per direction</td></tr>
+<tr><td>Resource</td><td>CombatTuning</td><td>All window lengths, speeds, arc angle, ranges</td></tr>
+<tr><td>Resource</td><td>Hitstop</td><td>Remaining ticks; gameplay timers pause while above zero</td></tr>
+<tr><td>Events</td><td>Deflected, Hit, Struck, StateChanged</td><td>Decouple combat from VFX, audio, camera</td></tr>
+</table>
+<div class="rule"><b>Visual rig reads, never writes.</b> It subscribes to <code>StateChanged</code> and the events above, then animates from <code>PhaseTimer</code> progress (0 to 1).</div>
+
+<h2><span>8</span>Rapier2D setup</h2>
+<table>
+<tr><th>Body</th><th>Rapier role</th><th>Notes</th></tr>
+<tr><td>Player blob</td><td>Dynamic or kinematic body, circle collider</td><td>You set velocity directly from state; keep damping high for snappy stops</td></tr>
+<tr><td>Parry arc</td><td>Sensor shape or manual angle + distance test</td><td>Manual test is more precise and easier to tune</td></tr>
+<tr><td>Attack hitbox</td><td>Sensor, enabled only in Active slash phase</td><td>Track "already hit" set per swing so one swing hits once</td></tr>
+<tr><td>Tentacle strike</td><td>Sensor segments at the tip</td><td>Enabled only in ActiveStrike</td></tr>
+<tr><td>Hurt zone</td><td>Sensor on player</td><td>Tentacle overlap triggers the resolver in section 4</td></tr>
+</table>
+<p>Use collision groups (Player, Enemy, PlayerAttack, EnemyAttack, Environment) so attacks never fight the blob's own body. Read collision events in the combat system and convert them into your own events; do not drive state straight from raw Rapier events.</p>
+
+<h2><span>9</span>System order inside FixedUpdate</h2>
+<div class="card"><pre class="mermaid">
+flowchart LR
+  S1["Lock-on update<br/>closest enemy, no panics on empty"] --> S2["Intent + buffer"]
+  S2 --> S3["Tick timers<br/>skip while Hitstop > 0"]
+  S3 --> S4["State transitions<br/>cancel rules"]
+  S4 --> S5["Velocity from state"]
+  S5 --> S6["Parry + melee checks"]
+  S6 --> S7["Rapier step"]
+  S7 --> S8["Event consumers<br/>hitstop, posture, stagger"]
+</pre></div>
+<p>Chain these explicitly with system sets. Split queries so no two systems in a chain borrow the same component mutably at once, and treat missing targets as a normal case: no player-facing panic when the lock-on query is empty.</p>
+
+<h2><span>10</span>Game-feel checklist</h2>
+<table>
+<tr><th>Moment</th><th>Cue</th></tr>
+<tr><td>Successful deflect</td><td>2 to 4 tick hitstop, bright spark, tentacle recoils hard, small camera kick, crisp sound</td></tr>
+<tr><td>Taking a hit</td><td>Longer hitstop, knockback, blob squash and jiggle, brief vignette</td></tr>
+<tr><td>Dash</td><td>Stretched teardrop, afterimage trail, short FOV or zoom pulse</td></tr>
+<tr><td>Attack</td><td>Pull-back anticipation, slash ribbon on the active frames only</td></tr>
+<tr><td>Parry stance</td><td>Front arc tightens and brightens; fades during guard hold</td></tr>
+<tr><td>Posture break</td><td>Enemy slumps, time slows slightly, clear prompt for the punish strike</td></tr>
+</table>
+<p>Visual intensity should map to phase progress, so a late parry looks and sounds weaker than a perfect one. Players learn the window from that feedback.</p>
+
+<h2><span>11</span>Suggested build order</h2>
+<ol>
+<li><b>Neutral + lock-on strafe</b> with the fixed-timestep loop and tuning resource.</li>
+<li><b>State machine skeleton</b> with phase timers and debug text showing state and phase.</li>
+<li><b>Dash</b> with i-frames; verify by drawing the i-frame window.</li>
+<li><b>One tentacle</b> with Telegraph / ActiveStrike / Recover on a loop.</li>
+<li><b>Hit resolution</b> and Staggered; enemy can now hurt you.</li>
+<li><b>Parry</b> with arc test, deflect event, hitstop; tune the window here first.</li>
+<li><b>Attack</b> with hitbox, combo buffer, posture damage.</li>
+<li><b>Input buffer and cancels</b>, then the full visual rig and polish.</li>
+</ol>
+<div class="rule"><b>Debug tools to build early:</b> draw the parry arc, i-frame window, active hitboxes and tentacle phase as gizmos, and add a slow-motion key. Tuning this kind of game without seeing the windows is guesswork.</div>
+
+<h2><span>12</span>Pseudocode with sample values</h2>
+<p>This is Rust-flavoured pseudocode, not compilable. All values assume a 60 Hz fixed tick (1 tick is about 16.7 ms) and world units in pixels. Treat every number as a dial.</p>
+
+<h3>12.1 Tuning resource (one place for every number)</h3>
+<pre class="code">CombatTuning:
+  tick_rate           = 60
+  strafe_speed        = 260 px/s
+  strafe_orbit_radius = keep current distance (no pull-in)
+
+  dash:    iframe_ticks = 8,  glide_ticks = 8,  settle_ticks = 3
+           speed = 520 px/s,  curve = ease_out,  cancel_after_progress = 0.70
+  parry:   active_ticks = 8,  guard_ticks = 6,  recovery_ticks = 10
+           arc_half_angle = 50 deg,  arc_range = 90 px,  move_scale = 0.30
+  attack:  windup = 6,  active = 4,  recovery = 12
+           lunge_speed = 180 px/s,  combo_max = 3,  posture_damage = 8
+  stagger: ticks = 18,  knockback_speed = 400 px/s
+  buffer:  max_age_ticks = 8,  double_tap_ticks = 12
+  hitstop: on_deflect = 4,  on_player_hit = 7,  on_posture_break = 10
+  posture: max = 100,  per_deflect = 12,  regen_delay = 90,  regen_per_sec = 20</pre>
+
+<h3>12.2 Core data</h3>
+<pre class="code">enum PlayerState { Neutral, Dashing, Parrying, Attacking, Staggered }
+
+enum Phase {                       // one flat list; each state uses a subset
+  None,
+  DashIframes, DashGlide, DashSettle,
+  ParryActive, ParryGuard, ParryRecovery,
+  AtkWindup, AtkActive, AtkRecovery,
+  Stun
+}
+
+PhaseTimer { phase: Phase, elapsed: u32, total: u32 }
+  progress() = elapsed / total          // 0.0 to 1.0, used by physics AND visuals
+
+Intent { kind: Dash(dir) | Parry | Attack,  pressed_on_tick: u32 }</pre>
+
+<h3>12.3 Input to intent (runs every frame, writes only the buffer)</h3>
+<pre class="code">fn read_input(keys, buffer, now_tick):
+  strafe_axis = (D pressed) - (A pressed)       // continuous, not buffered
+
+  for dir in [Inward(W), Outward(S)]:
+    if just_pressed(dir):
+      if now_tick - buffer.last_tap[dir] &lt;= 12:    // double tap
+        buffer.slot = Intent(Dash(dir), now_tick)
+        buffer.last_tap[dir] = NEVER                // stop triple-tap re-fire
+      else:
+        buffer.last_tap[dir] = now_tick
+
+  if just_pressed(PARRY):   buffer.slot = Intent(Parry,  now_tick)
+  if just_pressed(ATTACK) and buffer.slot is not Parry:
+                            buffer.slot = Intent(Attack, now_tick)</pre>
+
+<h3>12.4 State machine (the only place that changes state)</h3>
+<pre class="code">fn can_accept(state, phase, progress, intent) -&gt; bool:
+  match state:
+    Neutral   =&gt; true
+    Dashing   =&gt; intent is Parry or Attack  and progress &gt;= 0.70   // late cancel
+    Parrying  =&gt; deflect_succeeded_this_parry                      // chain or counter
+    Attacking =&gt; phase == AtkRecovery and intent is Attack
+                 or phase == AtkRecovery and intent is Dash        // dash out of recovery
+    Staggered =&gt; false
+
+fn state_machine(tick):
+  if hitstop.remaining &gt; 0: return                // freeze all gameplay
+
+  // 1. react to combat results (events written by the resolver, section 12.6)
+  for ev in Hit events:
+    if not has(Invulnerable) and state != Staggered:
+      enter(Staggered, knockback = ev.direction * 400)
+  for ev in Deflected events:
+    deflect_succeeded_this_parry = true
+
+  // 2. advance the timer
+  timer.elapsed += 1
+  if timer.elapsed &gt;= timer.total:
+    next = next_phase(state, phase)               // e.g. ParryActive -&gt; ParryGuard
+    if next exists: set_phase(next)
+    else:           enter(Neutral)
+
+  // 3. try to consume the buffered intent
+  intent = buffer.slot
+  if intent exists:
+    if tick - intent.pressed_on_tick &gt; 8: buffer.clear()          // too old
+    elif can_accept(state, phase, timer.progress(), intent):
+      enter(state_for(intent));  buffer.clear()
+
+fn enter(new_state):
+  state = new_state;  deflect_succeeded_this_parry = false
+  set_phase(first_phase_of(new_state))
+  match new_state:
+    Dashing:  add Invulnerable (removed when phase leaves DashIframes)
+    Attacking: clear hit_set                      // fresh "already hit" list per swing
+  emit StateChanged(new_state)                    // visuals and audio listen to this</pre>
+
+<h3>12.5 Velocity from state (writes Rapier velocity, nothing else)</h3>
+<pre class="code">fn apply_velocity(state, phase, timer, strafe_axis, to_enemy):
+  tangent = perpendicular(to_enemy)               // orbit direction
+
+  match state:
+    Neutral:
+      vel = tangent * strafe_axis * 260
+    Dashing:
+      t = timer.progress()
+      speed = 520 * (1 - t)^2                     // ease-out: fast start, soft end
+      vel = dash.direction * speed
+    Parrying:
+      vel = tangent * strafe_axis * 260 * 0.30
+    Attacking:
+      vel = to_enemy * 180 if phase in [AtkWindup, AtkActive] else 0
+    Staggered:
+      vel = knockback * (1 - timer.progress())    // decays over the stun
+
+  body.linvel = vel
+  body.angvel = shortest_turn(body.facing, to_enemy)   // except Attacking: facing locked
+                  * turn_rate</pre>
+
+<h3>12.6 Hit and parry resolver (one system, fixed priority)</h3>
+<pre class="code">fn resolve_strikes():
+  for t in tentacles where t.state == ActiveStrike and not t.resolved:
+    if not overlaps(t.tip, player.hurt_zone): continue
+    t.resolved = true                             // each strike resolves exactly once
+
+    if has(Invulnerable):                         // 1. dash i-frames
+      continue
+
+    if player.state == Parrying and phase == ParryActive:   // 2. perfect parry
+      to_tip = t.tip - player.pos
+      in_range = length(to_tip) &lt;= 90
+      in_arc   = angle_between(player.facing, to_tip) &lt;= 50 deg
+      if in_range and in_arc:
+        emit Deflected { tentacle: t, point: t.tip }
+        hitstop.remaining = max(hitstop.remaining, 4)
+        t.state = Deflected;  t.recoil = -to_tip.normalized * 300
+        enemy.posture += 12
+        if enemy.posture &gt;= 100: emit PostureBreak; hitstop.remaining = 10
+        continue
+
+    if player.state == Parrying and phase == ParryGuard:   // 3. soft block
+      emit Hit { direction: ..., knockback_scale: 0.4, damage: 0 }
+      continue
+
+    emit Hit { direction: from t to player, knockback_scale: 1.0 }   // 4. full hit
+    hitstop.remaining = max(hitstop.remaining, 7)</pre>
+
+<h3>12.7 Tentacle tick</h3>
+<pre class="code">fn tentacle_tick(t):                               // skipped while hitstop &gt; 0
+  t.timer += 1
+  match t.state:
+    Idle:         if ai_wants_attack: t.state = Telegraph; t.timer = 0
+    Telegraph:    if t.timer &gt;= 24: t.state = ActiveStrike; t.resolved = false
+                  // 24 ticks = 0.4 s readable wind-up; vary the gap BEFORE it, not the tell
+    ActiveStrike: sweep tip along path;  if t.timer &gt;= 10: t.state = Recover
+    Deflected:    apply recoil impulse;  if t.timer &gt;= 30: t.state = Recover
+    Recover:      if t.timer &gt;= 40 (or 60 if previously deflected): t.state = Idle</pre>
+
+<h3>12.8 Hitstop</h3>
+<pre class="code">GAMEPLAY set run condition: hitstop.remaining == 0
+  (state machine, timers, velocity, tentacle tick all skip)
+
+fn hitstop_tick():                                  // always runs
+  if hitstop.remaining &gt; 0:
+    if just_started: stash rapier velocities, set bodies to zero
+    hitstop.remaining -= 1
+    if now zero: restore stashed velocities
+
+Visual set keeps running during hitstop: sparks, shake and squash animate
+on real time, so the freeze looks crisp instead of dead.</pre>
+
+<h3>12.9 Visual rig (reads state, never writes it)</h3>
+<pre class="code">fn blob_visuals(state, timer, velocity, to_enemy):
+  p = timer.progress()
+  match (state, phase):
+    (Parrying, ParryActive):  arc_brightness = 1.0;  arc_width = lerp(60 deg, 40 deg, p)
+    (Parrying, ParryGuard):   arc_brightness = 1.0 - p * 0.6   // fades out
+    (Attacking, AtkWindup):   blob_stretch_back = ease_in(p) * 0.25
+    (Attacking, AtkActive):   slash_ribbon_sweep = p;  ribbon_visible = true
+    (Dashing, _):             stretch_along(velocity, amount = speed / 520 * 0.5)
+                              spawn_afterimage_every(2 ticks)
+    (Staggered, _):           wobble = sin(p * 40) * (1 - p) * 0.3
+    (Neutral, _):             idle_breathing; core_offset = lerp(core_offset, to_enemy * 6, 0.2)
+
+on Deflected event:  spawn_spark(point);  shake(amount = 4, ticks = 6)
+on Hit event:        squash(direction);  vignette_pulse(0.4 s)</pre>
+
+<div class="rule"><b>Pitfalls to avoid:</b> (1) resolving the same strike every tick, so always set a <code>resolved</code> flag; (2) letting visuals or the resolver change <code>PlayerState</code> directly; (3) advancing timers during hitstop; (4) reading raw Rapier events as gameplay truth instead of converting them into your own events; (5) using <code>unwrap</code> on the lock-on query, since an empty query must mean "no target, stay Neutral."</div>
+
+<div class="rule"><b>Mapping to Bevy later:</b> the <code>CombatTuning</code> and <code>InputBuffer</code> are resources, <code>PlayerState</code> and <code>PhaseTimer</code> are components on the player, the "emit" lines are events, and each <code>fn</code> becomes a system placed in the order from section 9.</div>
+
+<h2><span>13</span>Where to study this</h2>
+<p>Grouped by the part of the blueprint they help with. Links were checked at the time of writing.</p>
+
+<h3>Bevy: fixed timestep and structure</h3>
+<table>
+<tr><th>Resource</th><th>Take this from it</th></tr>
+<tr><td><a href="https://bevy-cheatbook.github.io/fundamentals/fixed-timestep.html">Unofficial Bevy Cheat Book: Fixed Timestep</a></td><td>When to put systems in <code>Update</code> vs <code>FixedUpdate</code>, and why fixed-step systems are not evenly spaced in real time. This underpins section 1 and section 9.</td></tr>
+<tr><td><a href="https://bevy.org/examples-webgpu/movement/physics-in-fixed-timestep/">Bevy example: physics in a fixed timestep</a></td><td>The recommended pattern for collecting input every frame, consuming it in <code>FixedUpdate</code>, and smoothing the visuals. It also links Glenn Fiedler’s classic article “Fix Your Timestep!”.</td></tr>
+<tr><td><a href="https://github.com/bevyengine/bevy/blob/main/examples/ecs/fixed_timestep.rs">Bevy example: fixed_timestep.rs</a></td><td>A 40-line demo of <code>Time&lt;Fixed&gt;</code> and overstep. Run it once to see the schedule behave.</td></tr>
+</table>
+
+<h3>Rapier 2D: sensors, groups and events</h3>
+<table>
+<tr><th>Resource</th><th>Take this from it</th></tr>
+<tr><td><a href="https://rapier.rs/docs/user_guides/bevy_plugin/colliders">Rapier docs: colliders (Bevy plugin)</a></td><td>Sensors, collision groups and collider setup for the parry arc, hurt zone and attack hitboxes in section 8.</td></tr>
+<tr><td><a href="https://rapier.rs/docs/user_guides/bevy_plugin/advanced_collision_detection">Rapier docs: advanced collision detection</a></td><td>Collision events only fire if at least one collider has <code>ActiveEvents::COLLISION_EVENTS</code>. Also covers physics hooks for custom contact filtering.</td></tr>
+<tr><td><a href="https://rapier.rs/docs/">rapier.rs user guide</a></td><td>The main documentation for <code>bevy_rapier</code>; the crate’s own docs point here.</td></tr>
+</table>
+<div class="rule"><b>Version warning:</b> Bevy renamed its event types in recent releases (current <code>bevy_rapier2d</code> docs use Bevy “messages”), so older tutorials show <code>EventReader</code> code that no longer matches. Always read the docs for the exact version in your <code>Cargo.toml</code>. Avian is the other main physics option in the Bevy ecosystem; don’t mix it with Rapier in one project.</div>
+
+<h3>State machines</h3>
+<table>
+<tr><th>Resource</th><th>Take this from it</th></tr>
+<tr><td><a href="https://gameprogrammingpatterns.com/state.html">Game Programming Patterns: State</a></td><td>Free chapter by Robert Nystrom. Explains why one state field beats a pile of booleans, and how transitions work. Maps straight onto section 2.</td></tr>
+</table>
+
+<h3>Input buffering and cancel windows</h3>
+<table>
+<tr><th>Resource</th><th>Take this from it</th></tr>
+<tr><td><a href="https://medium.com/@yosispring/input-buffering-action-canceling-and-also-forbidden-knowledge-47a3f8a95151">Input Buffering, Action Canceling (Yosi Spring)</a></td><td>Short and practical. Covers keeping buffers small, giving newer inputs priority, and avoiding one press counting as several inputs, all relevant to section 6.</td></tr>
+<tr><td><a href="https://www.ssbwiki.com/Buffering">SmashWiki: Buffering</a></td><td>See how a shipped game defines its buffer window in frames. Good for picking sensible numbers.</td></tr>
+<tr><td><a href="https://dustloop.com/w/P4U2R/Universal_Strategy">Dustloop wiki (fighting game frame data)</a></td><td>Browse the frame data pages to see startup, active and recovery written out per move. It’s the same vocabulary as your phase timers.</td></tr>
+</table>
+
+<h3>Game feel: hitstop, shake and juice</h3>
+<table>
+<tr><th>Resource</th><th>Take this from it</th></tr>
+<tr><td><a href="https://www.youtube.com/watch?v=AJdEqssNZ-U">“The Art of Screenshake” (Jan Willem Nijman, Vlambeer)</a></td><td>A 40-minute talk that adds dozens of small tweaks to a dull prototype. Best single watch for section 10.</td></tr>
+<tr><td><a href="https://gamedesignskills.com/game-design/game-feel/">Game Design Skills: breaking down game feel</a></td><td>Points out that the Vlambeer talk is about physicality, not all of game feel, and gives a broader frame.</td></tr>
+<tr><td><a href="https://freegamesprites.com/es/news/game-feel-2d-combat-juice-tricks">2D combat juice tricks (blog)</a></td><td>Rule-of-thumb numbers: light hits get about 2 to 3 frames of hitstop at 60 fps, and hitstop should freeze attacker and target together. A third-party blog, so treat the numbers as starting points.</td></tr>
+<tr><td>“Juice it or lose it” (Jonasson and Purho) and “Secrets of Game Feel and Juice” (Game Maker’s Toolkit)</td><td>Search these titles on YouTube. Short, visual explanations of why stacked feedback makes actions feel significant.</td></tr>
+<tr><td>Steve Swink, <i>Game Feel</i> (book)</td><td>The standard text on responsiveness, input and polish. Worth reading for the thinking behind your tuning resource.</td></tr>
+</table>
+
+<h3>Understanding Sekiro’s combat</h3>
+<table>
+<tr><th>Resource</th><th>Take this from it</th></tr>
+<tr><td><a href="https://www.gamedeveloper.com/design/how-i-broke-sekiro-shadows-die-twice">How I Broke Sekiro (Game Developer)</a></td><td>A design dive on its reactive, defence-first approach, plus where the enemy AI can be exploited. Useful as a warning for your tentacle AI.</td></tr>
+<tr><td><a href="https://game-wisdom.com/critical/breakdown-sekiros-combat-broken">Breaking Down Sekiro’s Combat (Game Wisdom)</a></td><td>Another design breakdown of posture and reactive play. Both articles argue the system is exploitable, so read them for structure, not as a recipe.</td></tr>
+<tr><td><a href="https://www.pcgamer.com/sekiro-is-a-perfect-subversion-of-everything-dark-souls-has-taught-me">PC Gamer: Sekiro vs the Dark Souls approach</a></td><td>A player’s view of the deflect, posture and deathblow loop, which is exactly what section 4 and the posture system are modelling.</td></tr>
+</table>
+
+<h3>Suggested study order</h3>
+<ol>
+<li>Cheat Book fixed timestep page, then the Bevy physics-in-fixed-timestep example, before you write any combat code.</li>
+<li>Nystrom’s State chapter while building the state machine skeleton (build steps 1 and 2).</li>
+<li>Rapier sensor and event docs when you add the tentacle and hit resolution (steps 4 to 6).</li>
+<li>Input buffering articles when you reach step 8.</li>
+<li>The Vlambeer talk before the polish pass, and again after, since it reads differently once you have something to tune.</li>
+</ol>
+
+<h2><span>14</span>Building the player: Core + Mantle + Tendril</h2>
+<p>The plan is sound. The one change I’d make is to split the work by <b>what each part needs to remember</b>. The body only needs the current pose, so a shader is enough. The weapon needs history (for the slash trail), so it needs a mesh you rebuild each frame.</p>
+
+<h3>14.1 Technique choice per part</h3>
+<table>
+<tr><th>Part</th><th>Use</th><th>Why</th></tr>
+<tr><td>Mantle (blob body)</td><td>One quad with a custom 2D material and an SDF metaball fragment shader</td><td>Smooth blending is free with a smooth-min, and deformation is just a few uniforms. A spring-ring mesh works too, but needs more CPU code for less visual gain.</td></tr>
+<tr><td>Core (eye)</td><td>A small separate glow circle, child of the visual root</td><td>It must move independently of the body, so keep it out of the blob shader.</td></tr>
+<tr><td>Tendril (weapon)</td><td>One dynamic ribbon mesh, rebuilt every frame</td><td>A trail needs past positions, which a stateless shader doesn’t have. One ribbon rig covers guard, parry and slash.</td></tr>
+<tr><td>Afterimages</td><td>A small pool of fading ghost copies</td><td>Cheaper and easier to tune than a history buffer inside the shader.</td></tr>
+</table>
+
+<h3>14.2 Entity layout</h3>
+<div class="card"><pre class="mermaid">
+flowchart TD
+  P["Player entity<br/>RigidBody, Collider, PlayerState, PhaseTimer"] --> V["VisualRoot<br/>no physics, springs scale and rotation"]
+  V --> M["Mantle<br/>quad + blob shader"]
+  V --> C["Core<br/>small glow circle"]
+  V --> T["Tendril<br/>dynamic ribbon mesh"]
+  P -. spawns .-> A["Afterimage pool<br/>world-space ghosts"]
+</pre></div>
+<div class="rule"><b>Never squash the physics entity.</b> Stretch, shear and wobble go on <code>VisualRoot</code> only. The collider stays a clean circle, so a dash that looks like a long teardrop can’t change hit detection.</div>
+
+<h3>14.3 Visual data flow</h3>
+<div class="card"><pre class="mermaid">
+flowchart LR
+  G["Gameplay truth<br/>state, phase progress, velocity, to_enemy"] --> TG["Visual targets<br/>stretch, shear, core offset, tendril pose, glow"]
+  TG --> SP["Springs and easing<br/>smooth every frame"]
+  SP --> O1["Transform<br/>VisualRoot"]
+  SP --> O2["Material uniforms<br/>lobes, colors, rim"]
+  SP --> O3["Ribbon vertices<br/>tendril mesh"]
+</pre></div>
+<p>Two stages matter. First, <b>targets</b>: a system reads state and writes where each visual wants to be. Second, <b>springs</b>: a separate system moves the current visuals toward those targets. The springs are what make the blob feel alive, and this split keeps the state logic free of animation math.</p>
+
+<h3>14.4 Mantle: effect recipes</h3>
+<table>
+<tr><th>Effect</th><th>How</th><th>Sample values</th></tr>
+<tr><td>Strafe lean</td><td>Rotate or shear <code>VisualRoot</code> a little toward the strafe direction; the core stays aimed at the enemy</td><td>Max tilt 12 deg, spring k=120</td></tr>
+<tr><td>Dash teardrop</td><td>Align <code>VisualRoot</code> to the velocity, stretch along it, thin across it to keep volume</td><td>stretch = 1 + 0.6 × speed/520; across = 1/√stretch</td></tr>
+<tr><td>Snap-back wobble</td><td>On dash end, set the target back to 1.0 and let an underdamped spring overshoot</td><td>k=180, damping=14 (about 0.5 damping ratio)</td></tr>
+<tr><td>Goo feel</td><td>5 to 6 satellite lobes around the body, each lagging behind on its own spring, merged by smooth-min</td><td>Lobe radius 0.35 × body, blend sharpness k=0.4 × body</td></tr>
+<tr><td>Hit reaction</td><td>Push an impulse into the wobble spring, directed away from the hit</td><td>Impulse 0.4, decays within about 18 ticks</td></tr>
+</table>
+<pre class="code">spring_step(s, target, k, damping, dt):
+  accel = k * (target - s.value) - damping * s.vel
+  s.vel   += accel * dt
+  s.value += s.vel * dt          // run in Update with real dt; visuals only</pre>
+
+<h3>14.5 Core: state to look</h3>
+<table>
+<tr><th>State</th><th>Core</th></tr>
+<tr><td>Neutral</td><td>Cool colour, steady glow, offset toward the enemy by about 6 px</td></tr>
+<tr><td>Dashing</td><td>Stretches slightly with the body, brightness up, offset pushed forward</td></tr>
+<tr><td>Parry active</td><td>White-hot, brief size pulse; the clearest “deflect window is open” cue</td></tr>
+<tr><td>Attacking</td><td>Warm tint, small kick forward on the active frames</td></tr>
+<tr><td>Staggered</td><td>Dims and flickers; offset jitters</td></tr>
+</table>
+
+<h3>14.6 Tendril: one rig, three poses</h3>
+<p>The tendril is a ribbon sampled along a curve defined by 4 control points in the player’s local space. Each pose is just a different set of control points and a width and brightness. Blend the current points toward the target pose with a spring, then rebuild the ribbon.</p>
+<table>
+<tr><th>Pose</th><th>Shape</th><th>Sample values</th></tr>
+<tr><td>Guard</td><td>Wide, soft arc around the front</td><td>Half-angle 70 deg, radius 1.15 × body, alpha 0.5</td></tr>
+<tr><td>Parry active</td><td>Taut, thin, bright crescent. <b>Use the same numbers as the gameplay arc</b></td><td>Half-angle = tuning arc (50 deg), radius = tuning range, rim flash 1.0</td></tr>
+<tr><td>Slash windup</td><td>Pulled back behind the start side</td><td>25 deg past the start angle</td></tr>
+<tr><td>Slash active</td><td>Tip sweeps a cubic Bézier from one side to the other, flipping each combo hit</td><td>Sweep ±70 deg, t = ease_out(phase progress)</td></tr>
+</table>
+<pre class="code">fn rebuild_tendril(rig, state, phase, p):
+  target_pts = pose_for(state, phase, p)           // 4 control points
+  rig.pts    = spring_toward(rig.pts, target_pts)  // smooth the morph
+
+  // body of the ribbon
+  for i in 0..24:
+    t = i / 23
+    pos    = bezier(rig.pts, t)
+    normal = perpendicular(bezier_tangent(rig.pts, t))
+    w      = rig.width * taper(t)                  // thin at both ends
+    verts[2*i]   = pos + normal * w
+    verts[2*i+1] = pos - normal * w
+  write verts into the mesh (same vertex count every frame)
+
+  // slash trail: remember where the tip WAS, in world space
+  if phase == AtkActive: trail.push(world(tip))   // ring buffer of 12
+  build second ribbon from trail; alpha = 1 - age/12 (dissolve)</pre>
+<div class="rule"><b>Visual arc and gameplay arc must share numbers.</b> If the crescent looks 60 deg wide but the check uses 50 deg, players will feel cheated. Draw the real arc as a debug gizmo over the crescent while tuning.</div>
+
+<h3>14.7 Making it in Bevy</h3>
+<ul>
+<li><b>Custom body shader:</b> use a custom 2D material (<code>Material2d</code>) on a <code>Mesh2d</code> quad, with a fragment shader file. Pass lobe positions, colours and stretch as uniforms. Use a fixed-size array for the lobes.</li>
+<li><b>Ribbon mesh:</b> create the mesh once with a fixed vertex count and UVs (U along the ribbon, V across), then overwrite the vertex positions each frame. Use U for the dissolve fade in the shader.</li>
+<li><b>Glow:</b> bloom post-processing on an HDR camera gives the core and rim flash their glow. Check the docs for your Bevy version for the exact setup.</li>
+<li><b>Smooth motion:</b> physics runs in <code>FixedUpdate</code>, so draw the visuals from an interpolated position, or the blob will jitter against the camera.</li>
+</ul>
+<p>Reference: the official <a href="https://bevy.org/examples-webgpu/shaders/shader-material-2d/">shader material 2D example</a> and the <a href="https://docs.rs/bevy_sprite/latest/bevy_sprite/trait.Material2d.html">Material2d trait docs</a>. Module paths for these types have moved between Bevy versions (some now live in <code>bevy_sprite_render</code>), so copy imports from the example that matches your version.</p>
+
+<h3>14.8 Visual build order</h3>
+<ol>
+<li><b>Plain circle</b> under <code>VisualRoot</code>, with the physics entity separate. Confirm it follows smoothly.</li>
+<li><b>Spring stretch and tilt</b> on <code>VisualRoot</code> (dash teardrop, strafe lean, snap-back).</li>
+<li><b>Blob shader</b> with satellite lobes replacing the circle.</li>
+<li><b>Core</b> with offset toward the enemy, then state colours.</li>
+<li><b>Tendril guard pose</b>, then the parry crescent tied to the tuning arc.</li>
+<li><b>Slash</b> pose and Bézier sweep, then the trail and dissolve.</li>
+<li><b>Afterimages</b> and hit wobble, then bloom and final polish.</li>
+</ol>
+<div class="rule"><b>Pitfalls:</b> (1) scaling the collider with the visuals; (2) rebuilding the ribbon with a changing vertex count; (3) driving gameplay from visual positions; (4) stacking too many glowing effects, which hides the parry cue; (5) making the guard pose too busy, since the crescent snap only reads if the neutral shape is calm.</div>
+</main>
+
+<!--claude-mermaid-runtime-begin:3847-->
+<style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
+<script src="/_runtime/mermaid-11.16.1.min.js"></script>
+<script>(function(){
+var CFG={"palettes":{"light":{"surface":"#f4efe4","text":"#42392e","line":"#8a7f6d","border":"#7a6c52","bg":"#fffdf8"},"dark":{"surface":"#262b34","text":"#f2f3f5","line":"#a8adb8","border":"#9aa4b8","bg":"#1f232b"}}};
+if(typeof mermaid==='undefined')return;
+var pres=Array.prototype.slice.call(document.querySelectorAll('pre.mermaid')).filter(function(p){if(p.hasAttribute('data-claude-mermaid-claimed'))return false;p.setAttribute('data-claude-mermaid-claimed','1');return true;});
+if(!pres.length)return;
+var mq=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+var root=document.documentElement;
+function source(el){
+var out='';
+for(var n=el.firstChild;n;n=n.nextSibling){
+if(n.nodeType===3)out+=n.data;
+else if(n.nodeName==='BR')out+='<br>';
+else if(n.nodeType===1)out+=(out.slice(-1)==='<'&&n.textContent[0]==='>'?'<'+n.localName+'>':'')+source(n);
+}
+return out;
+}
+var items=pres.map(function(pre){
+var mount=document.createElement('div');mount.className='mermaid-diagram';
+return {pre:pre,mount:mount,src:source(pre),text:pre.textContent};
+});
+var seq=0;
+var renderGen=0;
+var lastKey='';
+function pageBg(fallback){
+var els=[document.body,document.documentElement];
+for(var i=0;i<els.length;i++){
+var c=els[i]&&getComputedStyle(els[i]).backgroundColor;
+if(c&&c!=='transparent'&&c!=='rgba(0, 0, 0, 0)')return c;
+}
+return fallback;
+}
+function render(){
+var theme=root.getAttribute('data-theme');
+var dark=theme==='dark'||(!!(mq&&mq.matches)&&theme!=='light');
+var pal=dark?CFG.palettes.dark:CFG.palettes.light;
+var bg=pageBg(pal.bg);
+var key=(dark?'d':'l')+'|'+bg;
+if(key===lastKey)return;
+lastKey=key;
+var gen=++renderGen;
+var font=getComputedStyle(document.body).fontFamily||'sans-serif';
+var nat={useMaxWidth:false};
+mermaid.initialize({
+startOnLoad:false,securityLevel:'strict',theme:'base',
+flowchart:nat,sequence:nat,er:nat,state:nat,class:nat,pie:nat,
+gantt:nat,journey:nat,timeline:nat,gitGraph:nat,mindmap:nat,xyChart:nat,
+quadrantChart:nat,sankey:nat,c4:nat,requirement:nat,block:nat,
+packet:nat,kanban:nat,architecture:nat,radar:nat,
+themeVariables:{background:bg,mainBkg:pal.surface,primaryColor:pal.surface,
+primaryTextColor:pal.text,lineColor:pal.line,primaryBorderColor:pal.border,
+nodeBorder:pal.border,clusterBorder:pal.border,edgeLabelBackground:bg,
+clusterBkg:'rgba(127,127,127,0.07)',titleColor:pal.text,
+darkMode:dark,rowOdd:bg,rowEven:'rgba(127,127,127,0.07)',
+attributeBackgroundColorOdd:bg,attributeBackgroundColorEven:'rgba(127,127,127,0.07)',
+fontSize:'16px',fontFamily:font},
+themeCSS:'.node rect, .node circle, .node polygon, .node path, .cluster rect { stroke-width: 2px; }'
+});
+items.forEach(function(it){
+var id='claude-mermaid-'+seq++;
+mermaid.render(id,it.src).catch(function(e){
+if(it.src===it.text)throw e;
+return mermaid.render(id,it.text);
+}).then(function(r){
+if(gen!==renderGen)return;
+var prev=it.pre.previousElementSibling;
+if(prev&&prev.className==='mermaid-diagram'&&prev!==it.mount)return;
+it.mount.innerHTML=r.svg;
+if(!it.mount.parentNode)it.pre.parentNode.insertBefore(it.mount,it.pre);
+it.pre.style.display='none';
+},function(){
+var scratch=document.getElementById(id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+scratch=document.getElementById('d'+id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+if(gen!==renderGen)return;
+if(it.mount.parentNode)it.mount.parentNode.removeChild(it.mount);
+it.pre.style.display='';
+});
+});
+}
+render();
+if(mq&&mq.addEventListener)mq.addEventListener('change',render);
+if(typeof MutationObserver!=='undefined')new MutationObserver(render).observe(root,{attributes:true,attributeFilter:['data-theme']});
+})();</script>
+<!--claude-mermaid-runtime-end-->
+</body>
+</html>

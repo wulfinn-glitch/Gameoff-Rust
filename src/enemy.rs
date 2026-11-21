@@ -6,6 +6,7 @@ use bevy::mesh::{Mesh, Mesh2d};
 use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{Ccd, GravityScale, LockedAxes, RigidBody, Velocity};
 use bevy_rapier2d::geometry::Collider;
+use crate::bullet::*;
 use crate::config::DebugMode;
 use crate::player::Player;
 
@@ -26,10 +27,42 @@ impl Default for Enemy{
         Self{
             velocity: Vec2::default(),
             hitbox_radius: 25.0,
-            player_detect_dist: 200.0, // Also the dist player is at if inside
+            player_detect_dist: 500.0, // Also the dist player is at if inside
             turn_speed: 20.0,
             preferred_player_range: Vec2::new(100.0, 250.0)
         }
+    }
+}
+
+pub fn shoot_player(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    enemy_query: Query<&Transform, With<Enemy>>,
+    player_query: Query<&Transform, With<Player>>,
+    keys: Res<ButtonInput<KeyCode>>,
+){
+    let Ok(player_transform) = player_query.single() else { return; };
+
+    if !keys.just_pressed(KeyCode::Space) {return;}
+
+    for transform in enemy_query.iter() {
+        let shoot_point = transform.translation.truncate();
+        let direction = (player_transform.translation.truncate() - shoot_point).normalize();
+
+        let bullet = Bullet{
+            direction,
+            ..default()
+        };
+        commands.spawn((
+            GlobalTransform::default(),
+            EnemyBullet,
+            Mesh2d(meshes.add(Circle::new(10.0))),
+            MeshMaterial2d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
+            LifeTime(Timer::from_seconds(bullet.lifetime, TimerMode::Once)),
+            Transform::from_xyz(shoot_point.x, shoot_point.y, 0.0),
+            bullet,
+        ));
     }
 }
 
