@@ -3,6 +3,7 @@ pub mod enemy;
 pub mod helpers;
 pub mod config;
 pub mod bullet;
+pub mod health;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -17,6 +18,7 @@ use player::*;
 use crate::bullet::*;
 use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
+use crate::health::monitor_health;
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
 
 fn main() {
@@ -59,6 +61,7 @@ fn main() {
 
         // Helpers
         .add_systems(Update, show_fps)
+        .add_systems(Update, monitor_health)
 
         // Player systems
         .add_systems(Update, normal_movement)

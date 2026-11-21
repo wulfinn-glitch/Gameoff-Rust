@@ -9,6 +9,7 @@ use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
+use crate::health::Health;
 use crate::helpers::DoublePressTracker;
 
 #[derive(Component)]
@@ -93,6 +94,7 @@ pub fn spawn_player(
         Ccd::enabled(),
         Friction::coefficient(0.0),
         OrbitalMover::default(),
+        Health::default(),
         player,
     ));
 }

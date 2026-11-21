@@ -8,6 +8,7 @@ use bevy_rapier2d::dynamics::{Ccd, GravityScale, LockedAxes, RigidBody, Velocity
 use bevy_rapier2d::geometry::Collider;
 use crate::bullet::*;
 use crate::config::DebugMode;
+use crate::health::Health;
 use crate::player::Player;
 
 #[derive(Component)]
@@ -63,6 +64,7 @@ pub fn shoot_player(
             MeshMaterial2d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
             LifeTime(Timer::from_seconds(bullet.lifetime, TimerMode::Once)),
             Transform::from_xyz(shoot_point.x, shoot_point.y, 0.0),
+            Health::default(),
             bullet,
         ));
     }
