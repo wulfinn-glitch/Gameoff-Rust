@@ -17,6 +17,7 @@ pub struct Enemy{
     pub player_detect_dist: f32,
     pub turn_speed: f32,
     pub preferred_player_range: Vec2, // How far it prefers the player to be
+    pub player_in_range: bool,
 }
 
 #[derive(Component)]
@@ -29,7 +30,8 @@ impl Default for Enemy{
             hitbox_radius: 25.0,
             player_detect_dist: 500.0, // Also the dist player is at if inside
             turn_speed: 20.0,
-            preferred_player_range: Vec2::new(100.0, 250.0)
+            preferred_player_range: Vec2::new(200.0, 250.0),
+            player_in_range: false,
         }
     }
 }
@@ -87,9 +89,9 @@ pub fn draw_detect_dist(
     }
 }
 
-pub fn face_player_in_range(
+pub fn detect_player_in_range(
     player_q: Query<&Transform, With<Player>>,
-    mut enemy_q: Query<(&mut Transform, &Enemy), Without<Player>>,
+    mut enemy_q: Query<(&mut Transform, &mut Enemy), Without<Player>>,
     time: Res<Time>
 ) {
     let dt = time.delta_secs();
@@ -104,14 +106,19 @@ pub fn face_player_in_range(
     let player_pos = player_transform.translation.truncate();
     let facing_axis = Vec2::Y;
 
-    for (mut transform, enemy) in enemy_q.iter_mut() {
+    for (mut transform, mut enemy) in enemy_q.iter_mut() {
         let to_player = player_pos - transform.translation.truncate();
         let len_sq = to_player.length_squared();
 
         if len_sq < 1e-6 || len_sq > enemy.player_detect_dist.powi(2) {
+            enemy.player_in_range = false;
             continue;
         }
 
+        // Player is in range
+        enemy.player_in_range = true;
+
+        // Face player
         let target_rot = Quat::from_rotation_arc_2d(facing_axis, to_player.normalize());
         transform.rotation = transform.rotation.rotate_towards(target_rot, enemy.turn_speed * dt);
     }

@@ -66,7 +66,7 @@ fn main() {
         .add_systems(Update, find_closest_enemy)
 
         // Enemy Systems
-        .add_systems(Update, face_player_in_range)
+        .add_systems(Update, detect_player_in_range)
         .add_systems(Update, target_closest_enemy)
         .add_systems(Update, lock_unlock_closest_enemy)
 

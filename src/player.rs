@@ -21,10 +21,6 @@ pub struct Player {
     pub turn_speed: f32,
 }
 
-pub struct CombatVariables {
-
-}
-
 pub struct DashState {
     pub timer: Timer,
     pub direction: Vec2,
