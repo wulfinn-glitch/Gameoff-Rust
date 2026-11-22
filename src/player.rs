@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+use std::f32::consts::FRAC_PI_2;
 use bevy::asset::Assets;
+use bevy::camera::primitives::HalfSpace;
 use bevy::color::Color;
 use bevy::input::ButtonInput;
 use bevy::math::Vec2;
@@ -6,12 +9,15 @@ use bevy::mesh::{Mesh, Mesh2d};
 use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{GravityScale, LockedAxes, RigidBody};
 use bevy_rapier2d::geometry::Collider;
-use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
+use bevy_rapier2d::plugin::ReadRapierContext;
+use bevy_rapier2d::prelude::{Ccd, ColliderMassProperties, CollisionGroups, Friction, Group, Sensor, Velocity};
+use bevy_rapier2d::render::ColliderDebugColor;
+use crate::bullet::EnemyBullet;
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
 use crate::health::Health;
 use crate::uibar::*;
-use crate::helpers::DoublePressTracker;
+use crate::helpers::{DoublePressTracker, GROUP_ENEMY, GROUP_HITBOX, GROUP_PLAYER};
 use crate::posture::Posture;
 
 #[derive(Component)]
@@ -34,6 +40,12 @@ pub enum PlayerAction {
     AttackWindup,
     AttackActive,
     AttackRecover,
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum HitboxKind {
+    Attack,
+    Parry
 }
 
 #[derive(Component)]
@@ -132,6 +144,23 @@ pub fn tick_action(time: Res<Time>, mut query: Query<(&mut PlayerAction, &mut Ac
     }
 }
 
+pub fn sector_collider(
+    range: f32,
+    half_angle: f32,
+    segments: usize
+) -> Collider {
+    let mut points = Vec::with_capacity(segments + 2);
+    points.push(Vec2::ZERO);
+
+    for i in 0..=segments {
+        let t = i as f32 / segments as f32;
+        let angle = FRAC_PI_2 - half_angle + 2.0 * half_angle * t;
+        points.push(Vec2::from_angle(angle) * range);
+    }
+
+    Collider::convex_hull(&points).expect("sector hull")
+}
+
 pub fn start_action(
     keys: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&mut PlayerAction, &mut ActionTimer)>)
@@ -186,11 +215,12 @@ pub fn spawn_player(
         PlayerAction::default(),
         ActionTimer(Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Once)),
 
-        // Bars
-        // Health::default(),
-        // Posture::default()
-
+        CollisionGroups::new(GROUP_PLAYER, Group::ALL),
     )).id();
+
+    // Spawn hitboxes
+    spawn_hitbox(commands, player, HitboxKind::Attack, 95.0, 75.0);
+    spawn_hitbox(commands, player, HitboxKind::Parry, 60.0, 60.0);
 
     let health = Health {current: 100, min: 0, max: 100};
     let posture = Posture {
@@ -234,6 +264,128 @@ pub fn spawn_player(
 
     // Add to player
     commands.entity(player).insert((health, posture));
+}
+
+fn spawn_hitbox(
+    commands: &mut Commands,
+    player: Entity,
+    kind: HitboxKind,
+    range: f32,
+    half_angle_deg: f32,
+){
+    commands.spawn((
+        ChildOf(player),
+        kind,
+        sector_collider(range, half_angle_deg.to_radians(), 12),
+        Sensor,
+        ColliderMassProperties::Density(0.0),
+        // Is in hitbox, can hit enemy
+        CollisionGroups::new(GROUP_HITBOX, GROUP_ENEMY),
+        ColliderDebugColor(Hsla::new(0.0, 0.0, 0.2, 0.15)),
+        Transform::default(),
+        ));
+}
+
+pub fn color_hitboxes(
+    player_q: Query<&PlayerAction, With<Player>>,
+    mut hitbox_q: Query<(&HitboxKind, &mut ColliderDebugColor)>
+) {
+    let Ok(action) = player_q.single() else { return; };
+
+    for (kind, mut color) in hitbox_q.iter_mut() {
+        color.0 = hitbox_color(*kind, *action);
+    }
+}
+
+fn hitbox_color(kind: HitboxKind, action: PlayerAction ) -> Hsla {
+    match (kind, action) {
+        (HitboxKind::Attack, PlayerAction::AttackWindup) => Hsla::new(45.0, 1.0, 0.6, 0.9),   // orange
+        (HitboxKind::Attack, PlayerAction::AttackActive) => Hsla::new(0.0, 1.0, 0.55, 1.0),   // red
+        (HitboxKind::Attack, PlayerAction::AttackRecover) => Hsla::new(220.0, 0.6, 0.4, 0.6), // dim blue
+
+        (HitboxKind::Parry, PlayerAction::ParryActive) => Hsla::new(180.0, 1.0, 0.6, 1.0),    // cyan
+        (HitboxKind::Parry, PlayerAction::ParryRecover) => Hsla::new(220.0, 0.5, 0.4, 0.6),   // dim blue
+        _ => Hsla::new(0.0, 0.0, 0.2, 0.15),
+    }
+}
+
+pub fn resolve_attack_hits(
+    rapier: ReadRapierContext,
+    player_q: Query<&PlayerAction, With<Player>>,
+    hitbox_q: Query<(Entity, &HitboxKind)>,
+    enemy_q: Query<(), With<Enemy>>,
+    mut health_q: Query<&mut Health, With<Enemy>>,
+    mut already_hit: Local<HashSet<Entity>>,
+) {
+    let Ok(action) = player_q.single() else { return; };
+
+    if *action != PlayerAction::AttackActive {
+        already_hit.clear();
+        return;
+    }
+
+    let Ok(context) = rapier.single() else { return; };
+
+    // Check for intersection
+    for (sensor, kind) in hitbox_q.iter() {
+        if *kind != HitboxKind::Attack { return; }
+
+        for (a, b, intersecting) in context.intersection_pairs_with(sensor){
+            if !intersecting { continue; }
+
+            let other = if a == sensor { b } else { a };
+            if !enemy_q.contains(other){
+                continue;
+            }
+
+            // One hit per swing per enemy
+            if !already_hit.insert(other){
+                continue;
+            }
+
+            if let Ok(mut health) = health_q.get_mut(other){
+                health.current -= 10;
+                println!("Enemy Health: {:?}", health.current);
+            }
+        }
+    }
+}
+
+pub fn resolve_parry(
+    mut commands: Commands,
+    rapier: ReadRapierContext,
+    player_q: Query<&PlayerAction, With<Player>>,
+    hitbox_q: Query<(Entity, &HitboxKind)>,
+    bullet_q: Query<(), With<EnemyBullet>>,
+) {
+    let Ok(action) = player_q.single() else {
+        return;
+    };
+
+    if *action != PlayerAction::ParryActive {
+        return;
+    }
+
+    let Ok(context) = rapier.single() else {
+        return;
+    };
+
+    for (sensor, kind) in &hitbox_q {
+        if *kind != HitboxKind::Parry {
+            continue;
+        }
+
+        for (a, b, intersecting) in context.intersection_pairs_with(sensor) {
+            if !intersecting {
+                continue;
+            }
+
+            let other = if a == sensor { b } else { a };
+            if bullet_q.contains(other) {
+                commands.entity(other).despawn();
+            }
+        }
+    }
 }
 
 pub fn normal_movement(

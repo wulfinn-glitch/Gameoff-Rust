@@ -6,9 +6,11 @@ use bevy::mesh::{Mesh, Mesh2d};
 use bevy::prelude::*;
 use bevy_rapier2d::dynamics::{Ccd, GravityScale, LockedAxes, RigidBody, Velocity};
 use bevy_rapier2d::geometry::Collider;
+use bevy_rapier2d::prelude::{CollisionGroups, Group, Sensor};
 use crate::bullet::*;
 use crate::config::DebugMode;
 use crate::health::Health;
+use crate::helpers::GROUP_ENEMY;
 use crate::player::Player;
 
 #[derive(Component)]
@@ -97,7 +99,10 @@ pub fn shoot_player(
             MeshMaterial2d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
             LifeTime(Timer::from_seconds(bullet.lifetime, TimerMode::Once)),
             Transform::from_xyz(shoot_point.x, shoot_point.y, 0.0),
+            Collider::ball(10.0),
+            Sensor,
             Health::default(),
+            CollisionGroups::new(GROUP_ENEMY, Group::ALL),
             bullet,
         ));
     }
@@ -185,6 +190,8 @@ pub fn spawn_enemy(
         LockedAxes::ROTATION_LOCKED,
         Velocity::default(),
         Ccd::enabled(),
+        Health::default(),
+        CollisionGroups::new(GROUP_ENEMY, Group::ALL),
         base_enemy
     ));
 }

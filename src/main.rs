@@ -24,7 +24,6 @@ use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
 use crate::health::{monitor_health, Health};
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
 use crate::posture::{recover_posture, Posture};
-use crate::states::{MyGamplaySet, MyPausedState};
 use crate::uibar::update_stat_bar;
 
 fn main() {
@@ -87,7 +86,13 @@ fn main() {
         .add_systems(Update, normal_movement)
         .add_systems(Update, orbital_movement)
         .add_systems(Update, find_closest_enemy)
-        .add_systems(Update, (start_action, tick_action).chain())
+        .add_systems(Update, (
+            start_action,
+            tick_action,
+            color_hitboxes,
+            resolve_attack_hits,
+            resolve_parry,
+        ).chain())
         .add_systems(Update, debug_action)
 
         // Enemy Systems
@@ -110,14 +115,20 @@ fn main() {
         .run();
 }
 
-fn simulate_damage(keys: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Health>) {
+fn simulate_damage(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut Health>)
+{
     if keys.just_pressed(KeyCode::KeyH) {
         for mut health in &mut query {
             health.current = (health.current - 10).max(health.min);
         }
     }
 }
-fn simulate_posture_damage(keys: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Posture>) {
+fn simulate_posture_damage(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut Posture>)
+{
     if keys.just_pressed(KeyCode::KeyP) {
         for mut posture in &mut query {
             posture.current = (posture.current - 100).max(posture.min);

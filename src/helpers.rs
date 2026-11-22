@@ -2,9 +2,15 @@ use std::collections::HashMap;
 use bevy::diagnostic::{Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_pretty_text::prelude::*;
+use bevy_rapier2d::prelude::Group;
 
 #[derive(Component)]
 pub struct FpsText;
+
+// Groups
+pub const GROUP_PLAYER: Group = Group::GROUP_1;
+pub const GROUP_ENEMY: Group = Group::GROUP_2;
+pub const GROUP_HITBOX: Group = Group::GROUP_3;
 
 #[derive(Resource)]
 pub struct FpsUpdateTimer(Timer);
