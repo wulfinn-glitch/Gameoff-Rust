@@ -6,6 +6,7 @@ pub mod bullet;
 pub mod health;
 pub mod states;
 pub mod uibar;
+pub mod posture;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -22,6 +23,7 @@ use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
 use crate::health::{monitor_health, update_health_bar, Health};
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
+use crate::posture::{recover_posture, update_posture_bar, Posture};
 use crate::states::{MyGamplaySet, MyPausedState};
 
 fn main() {
@@ -77,6 +79,8 @@ fn main() {
         .add_systems(Update, show_fps)
         .add_systems(Update, monitor_health)
         .add_systems(Update, update_health_bar)
+        .add_systems(Update, update_posture_bar)
+        .add_systems(Update, recover_posture)
 
         // Player systems
         .add_systems(Update, normal_movement)
@@ -98,6 +102,7 @@ fn main() {
 
         // Debug
         .add_systems(Update, simulate_damage)
+        .add_systems(Update, simulate_posture_damage)
 
         // .add_systems(Startup, spawn_text)
         .add_systems(Update, draw_detect_dist) // Run if debug on
@@ -105,9 +110,16 @@ fn main() {
 }
 
 fn simulate_damage(keys: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Health>) {
-    if keys.just_pressed(KeyCode::Space) {
+    if keys.just_pressed(KeyCode::KeyH) {
         for mut health in &mut query {
             health.current = (health.current - 10).max(health.min);
+        }
+    }
+}
+fn simulate_posture_damage(keys: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Posture>) {
+    if keys.just_pressed(KeyCode::KeyP) {
+        for mut posture in &mut query {
+            posture.current = (posture.current - 100).max(posture.min);
         }
     }
 }

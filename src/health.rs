@@ -17,6 +17,9 @@ impl Default for Health {
     }
 }
 
+#[derive(Component)]
+pub struct HealthBar;
+
 pub fn spawn_health_bar(
     parent: &mut ChildSpawnerCommands,
     target_entity: Entity,
@@ -33,6 +36,7 @@ pub fn spawn_health_bar(
                 height: Val::Px(4.0),
                 align_items: AlignItems::Center,
                 justify_content: ui_bar_placement.justify_content,
+                border_radius: BorderRadius::MAX,
                 ..default()
             },
             BackgroundColor(Color::srgb(0.15, 0.2, 0.18))
@@ -40,9 +44,11 @@ pub fn spawn_health_bar(
             .with_children(|track| {
                 track.spawn((
                     UIBarFill(target_entity),
+                    HealthBar,
                     Node{
                         width: Val::Percent(75.0),
                         height: Val::Px(10.0),
+                        border_radius: BorderRadius::MAX,
                         ..default()
                     },
                     BackgroundColor(Color::srgb(0.35, 0.9, 0.55))
@@ -52,7 +58,7 @@ pub fn spawn_health_bar(
 
 pub fn update_health_bar(
     health_query: Query<Ref<Health>>,
-    mut fill_query: Query<(&UIBarFill, &mut Node)>,
+    mut fill_query: Query<(&UIBarFill, &mut Node), With<HealthBar>>,
 ){
     for (fill, mut node) in &mut fill_query {
         let Ok(health) = health_query.get(fill.0) else { continue; };

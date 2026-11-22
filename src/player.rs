@@ -9,9 +9,10 @@ use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
-use crate::health::{spawn_health_bar, Health};
+use crate::health::{spawn_health_bar, Health, HealthBar};
 use crate::uibar::*;
 use crate::helpers::DoublePressTracker;
+use crate::posture::{spawn_posture_bar, Posture};
 
 #[derive(Component)]
 pub struct Player {
@@ -175,17 +176,32 @@ pub fn spawn_player(
         Ccd::enabled(),
         Friction::coefficient(0.0),
         OrbitalMover::default(),
-        Health::default(),
         player,
     ))
     .insert((
         // State Combat system
         PlayerAction::default(),
         ActionTimer(Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Once)),
+
+        // Bars
+        Health::default(),
+        Posture::default()
+
     )).id();
 
+    // Add health bar
     commands.entity(ui_root).with_children(|parent| {
         spawn_health_bar(parent, player, UIBarPlacement{
+            top: Val::Percent(45.0),
+            width: Val::Percent(80.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        });
+    });
+
+    // Add posture bar
+    commands.entity(ui_root).with_children(|parent| {
+        spawn_posture_bar(parent, player, UIBarPlacement {
             top: Val::Percent(45.0),
             width: Val::Percent(80.0),
             justify_content: JustifyContent::Center,
