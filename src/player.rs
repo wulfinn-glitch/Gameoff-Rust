@@ -36,7 +36,9 @@ pub enum PlayerAction {
     Neutral,
     NeutralPostureRecover,
     ParryActive,
+    Block,
     ParryRecover,
+    BlockRecover,
     AttackWindup,
     AttackActive,
     AttackRecover,
@@ -112,15 +114,27 @@ pub fn duration(action: PlayerAction) -> f32 {
         PlayerAction::Neutral => 0.5,
         PlayerAction::NeutralPostureRecover => 0.5,
         PlayerAction::ParryActive => 0.15,
+        PlayerAction::Block => 0.0,
         PlayerAction::ParryRecover => 0.15,
+        PlayerAction::BlockRecover => 0.15,
         PlayerAction::AttackWindup => 0.10,
         PlayerAction::AttackActive => 0.10,
         PlayerAction::AttackRecover => 0.20,
     }
 }
 
-pub fn tick_action(time: Res<Time>, mut query: Query<(&mut PlayerAction, &mut ActionTimer)>) {
+pub fn tick_action(
+    time: Res<Time>,
+    mut query: Query<(&mut PlayerAction, &mut ActionTimer)>,
+    keys: Res<ButtonInput<KeyCode>>
+) {
     for (mut action, mut timer) in &mut query{
+
+        // Block has no timer
+        if *action == PlayerAction::Block{
+            continue;
+        }
+
         timer.0.tick(time.delta());
 
         if !timer.0.just_finished() {
@@ -129,18 +143,29 @@ pub fn tick_action(time: Res<Time>, mut query: Query<(&mut PlayerAction, &mut Ac
 
         // Mappings to and from. This would need to be more flexible
         *action = match *action {
-            PlayerAction::ParryActive => PlayerAction::ParryRecover,
+            PlayerAction::ParryActive => {
+                if keys.pressed(KeyCode::KeyQ){
+                    PlayerAction::Block
+                } else {
+                    PlayerAction::ParryRecover
+                }
+            }
             PlayerAction::ParryRecover => PlayerAction::Neutral,
+            PlayerAction::BlockRecover => PlayerAction::Neutral,
 
             PlayerAction::AttackWindup => PlayerAction::AttackActive,
             PlayerAction::AttackActive => PlayerAction::AttackRecover,
             PlayerAction::AttackRecover => PlayerAction::Neutral,
 
             PlayerAction::Neutral => PlayerAction::NeutralPostureRecover,
-            PlayerAction::NeutralPostureRecover => PlayerAction::Neutral
+            PlayerAction::NeutralPostureRecover => PlayerAction::Neutral,
+
+            PlayerAction::Block => PlayerAction::Block,
         };
 
-        timer.0 = Timer::from_seconds(duration(*action), TimerMode::Once);
+        if *action != PlayerAction::Block {
+            timer.0 = Timer::from_seconds(duration(*action), TimerMode::Once);
+        }
     }
 }
 
@@ -166,9 +191,22 @@ pub fn start_action(
     mut query: Query<(&mut PlayerAction, &mut ActionTimer)>)
 {
     for(mut action, mut timer) in &mut query{
+
+        if *action == PlayerAction::Block {
+            if !keys.pressed(KeyCode::KeyQ) {
+                *action = PlayerAction::BlockRecover;
+                timer.0 = Timer::from_seconds(duration(PlayerAction::BlockRecover), TimerMode::Once);
+            }
+            continue;
+        }
+
         let can_act = matches!(
             *action,
-            PlayerAction::Neutral | PlayerAction::NeutralPostureRecover | PlayerAction::ParryRecover | PlayerAction::AttackRecover
+            PlayerAction::Neutral
+            | PlayerAction::NeutralPostureRecover
+            | PlayerAction::ParryRecover
+            | PlayerAction::BlockRecover
+            | PlayerAction::AttackRecover
         );
 
         // cannot act if not part of these states
@@ -176,11 +214,11 @@ pub fn start_action(
 
         if keys.just_pressed(KeyCode::KeyQ){
             *action = PlayerAction::ParryActive;
-            timer.0 = Timer::from_seconds(0.15, TimerMode::Once);
+            timer.0 = Timer::from_seconds(duration(PlayerAction::ParryActive), TimerMode::Once);
         }
         else if keys.just_pressed(KeyCode::KeyE){
             *action = PlayerAction::AttackWindup;
-            timer.0 = Timer::from_seconds(0.15, TimerMode::Once);
+            timer.0 = Timer::from_seconds(duration(PlayerAction::AttackWindup), TimerMode::Once);
         }
     }
 }
@@ -304,7 +342,9 @@ fn hitbox_color(kind: HitboxKind, action: PlayerAction ) -> Hsla {
         (HitboxKind::Attack, PlayerAction::AttackRecover) => Hsla::new(220.0, 0.6, 0.4, 0.6), // dim blue
 
         (HitboxKind::Parry, PlayerAction::ParryActive) => Hsla::new(180.0, 1.0, 0.6, 1.0),    // cyan
+        (HitboxKind::Parry, PlayerAction::Block) => Hsla::new(205.0, 0.9, 0.5, 0.95),
         (HitboxKind::Parry, PlayerAction::ParryRecover) => Hsla::new(220.0, 0.5, 0.4, 0.6),   // dim blue
+        (HitboxKind::Parry, PlayerAction::BlockRecover) => Hsla::new(220.0, 0.5, 0.4, 0.6),
         _ => Hsla::new(0.0, 0.0, 0.2, 0.15),
     }
 }
@@ -354,7 +394,7 @@ pub fn resolve_attack_hits(
 pub fn receive_bullet_hits(
     mut commands: Commands,
     rapier: ReadRapierContext,
-    bullet_q: Query<(Entity, &Bullet)>,
+    bullet_q: Query<(Entity, &Bullet), With<EnemyBullet>>,
     mut player_q: Query<&mut Health, With<Player>>,
 ) {
     let Ok(context) = rapier.single() else { return; };
@@ -377,17 +417,18 @@ pub fn receive_bullet_hits(
 pub fn resolve_parry(
     mut commands: Commands,
     rapier: ReadRapierContext,
-    player_q: Query<&PlayerAction, With<Player>>,
+    mut player_q: Query<(&PlayerAction, &mut Health, &mut Posture), With<Player>>,
     hitbox_q: Query<(Entity, &HitboxKind)>,
-    bullet_q: Query<(), With<EnemyBullet>>,
+    bullet_q: Query<(&Bullet), With<EnemyBullet>>,
 ) {
-    let Ok(action) = player_q.single() else {
+    let Ok((action, mut health, mut posture)) = player_q.single_mut() else {
         return;
     };
 
-    if *action != PlayerAction::ParryActive {
-        return;
-    }
+    let parrying = *action == PlayerAction::ParryActive;
+    let blocking = *action == PlayerAction::Block;
+
+    if !parrying && !blocking {return;}
 
     let Ok(context) = rapier.single() else {
         return;
@@ -404,9 +445,27 @@ pub fn resolve_parry(
             }
 
             let other = if a == sensor { b } else { a };
-            if bullet_q.contains(other) {
-                commands.entity(other).despawn();
+            let Ok(bullet) = bullet_q.get(other) else {
+                continue;
+            };
+
+            if parrying {
+                // Perfect parry
+                posture.current = (posture.current + posture.parry_gain).min(posture.max);
             }
+            else{
+                // Block Spend guard
+                let after = posture.current - posture.block_cost;
+                if after <= posture.min {
+                    posture.current = posture.min;
+                    health.current -= bullet.damage;
+                }
+                else{
+                    posture.current = after;
+                }
+            }
+
+            commands.entity(other).despawn();
         }
     }
 }

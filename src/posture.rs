@@ -8,7 +8,10 @@ pub struct Posture{
     pub max: i32,
     pub min: i32,
     pub recover_rate: i32,
-    pub recovery_timer: Timer
+    pub recovery_timer: Timer,
+
+    pub block_cost: i32,
+    pub parry_gain: i32,
 }
 
 #[derive(Component)]
@@ -22,6 +25,8 @@ impl Default for Posture {
             min: 0,
             recover_rate: 10,
             recovery_timer: Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Repeating),
+            block_cost: 100,
+            parry_gain: 50,
         }
     }
 }

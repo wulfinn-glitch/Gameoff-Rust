@@ -92,8 +92,8 @@ fn main() {
             color_hitboxes,
             resolve_attack_hits,
             resolve_parry,
+            receive_bullet_hits,
         ).chain())
-        .add_systems(Update, receive_bullet_hits)
         .add_systems(Update, debug_action)
 
         // Enemy Systems
