@@ -9,7 +9,8 @@ use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
-use crate::health::Health;
+use crate::health::{spawn_health_bar, Health};
+use crate::uibar::*;
 use crate::helpers::DoublePressTracker;
 
 #[derive(Component)]
@@ -155,12 +156,14 @@ pub fn spawn_player(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
-    transform: Transform){
+    transform: Transform,
+    ui_root: Entity
+    ){
     // Store in var for getting defaults
     let player = Player::default();
 
     // Spawn Player (Lot of Components)
-    commands.spawn((
+    let player = commands.spawn((
         transform,
         Mesh2d(meshes.add(Circle::new(player.hitbox_radius))),
         MeshMaterial2d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
@@ -179,8 +182,16 @@ pub fn spawn_player(
         // State Combat system
         PlayerAction::default(),
         ActionTimer(Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Once)),
-    ));
+    )).id();
 
+    commands.entity(ui_root).with_children(|parent| {
+        spawn_health_bar(parent, player, UIBarPlacement{
+            top: Val::Percent(45.0),
+            width: Val::Percent(80.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        });
+    });
 }
 
 pub fn normal_movement(

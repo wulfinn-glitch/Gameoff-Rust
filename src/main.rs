@@ -5,6 +5,7 @@ pub mod config;
 pub mod bullet;
 pub mod health;
 pub mod states;
+pub mod uibar;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -19,7 +20,7 @@ use player::*;
 use crate::bullet::*;
 use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
-use crate::health::monitor_health;
+use crate::health::{monitor_health, update_health_bar, Health};
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
 use crate::states::{MyGamplaySet, MyPausedState};
 
@@ -75,6 +76,7 @@ fn main() {
         // Helpers
         .add_systems(Update, show_fps)
         .add_systems(Update, monitor_health)
+        .add_systems(Update, update_health_bar)
 
         // Player systems
         .add_systems(Update, normal_movement)
@@ -94,9 +96,20 @@ fn main() {
         .add_systems(Update, move_bullets)
         .add_systems(Update, despawn_expired_bullets)
 
+        // Debug
+        .add_systems(Update, simulate_damage)
+
         // .add_systems(Startup, spawn_text)
         .add_systems(Update, draw_detect_dist) // Run if debug on
         .run();
+}
+
+fn simulate_damage(keys: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Health>) {
+    if keys.just_pressed(KeyCode::Space) {
+        for mut health in &mut query {
+            health.current = (health.current - 10).max(health.min);
+        }
+    }
 }
 
 fn setup(mut commands: Commands,
@@ -106,7 +119,20 @@ fn setup(mut commands: Commands,
     // Spawn Camera Bundle (Bundles can always be accessed by the Transform)
     commands.spawn((Camera2d, Msaa::Sample4));
 
-    spawn_player(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(0.0, -320.0, 0.0));
+    // Spawn a root UI container (e.g., stacked vertically with row_gap)
+    let ui_root = commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            row_gap: Val::Px(24.0),
+            ..default()
+        })
+        .id();
+
+    spawn_player(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(0.0, -320.0, 0.0), ui_root);
 
     // spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(-200.0, 320.0, 0.0));
     // spawn_enemy(&mut commands, &mut meshes, &mut materials, Transform::from_xyz(200.0, 320.0, 0.0));
