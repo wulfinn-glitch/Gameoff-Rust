@@ -22,6 +22,20 @@ pub struct Player {
     pub turn_speed: f32,
 }
 
+#[derive(Component, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayerAction {
+    #[default]
+    Neutral,
+    ParryActive,
+    ParryRecover,
+    AttackWindup,
+    AttackActive,
+    AttackRecover,
+}
+
+#[derive(Component)]
+pub struct ActionTimer(pub Timer);
+
 pub struct DashState {
     pub timer: Timer,
     pub direction: Vec2,
@@ -72,6 +86,71 @@ impl Default for OrbitalMover {
 
 // Systems ----------------------------------------------------------------------------------------------------
 
+pub fn debug_action(query: Query<&PlayerAction, Changed<PlayerAction>>){
+    for action in &query{
+        println!("PlayerAction: {action:?}");
+    }
+}
+
+pub fn duration(action: PlayerAction) -> f32 {
+    match action {
+        PlayerAction::Neutral => 1.0,
+        PlayerAction::ParryActive => 0.15,
+        PlayerAction::ParryRecover => 0.15,
+        PlayerAction::AttackWindup => 0.10,
+        PlayerAction::AttackActive => 0.10,
+        PlayerAction::AttackRecover => 0.20,
+    }
+}
+
+pub fn tick_action(time: Res<Time>, mut query: Query<(&mut PlayerAction, &mut ActionTimer)>) {
+    for (mut action, mut timer) in &mut query{
+        timer.0.tick(time.delta());
+
+        if !timer.0.just_finished() {
+            continue;
+        }
+
+        // Mappings to and from. This would need to be more flexible
+        *action = match *action {
+            PlayerAction::ParryActive => PlayerAction::ParryRecover,
+            PlayerAction::ParryRecover => PlayerAction::Neutral,
+
+            PlayerAction::AttackWindup => PlayerAction::AttackActive,
+            PlayerAction::AttackActive => PlayerAction::AttackRecover,
+            PlayerAction::AttackRecover => PlayerAction::Neutral,
+
+            PlayerAction::Neutral => PlayerAction::Neutral,
+        };
+
+        timer.0 = Timer::from_seconds(duration(*action), TimerMode::Once);
+    }
+}
+
+pub fn start_action(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<(&mut PlayerAction, &mut ActionTimer)>)
+{
+    for(mut action, mut timer) in &mut query{
+        let can_act = matches!(
+            *action,
+            PlayerAction::Neutral | PlayerAction::ParryRecover | PlayerAction::AttackRecover
+        );
+
+        // cannot act if not part of these states
+        if !can_act {continue;}
+
+        if keys.just_pressed(KeyCode::KeyQ){
+            *action = PlayerAction::ParryActive;
+            timer.0 = Timer::from_seconds(0.15, TimerMode::Once);
+        }
+        else if keys.just_pressed(KeyCode::KeyE){
+            *action = PlayerAction::AttackWindup;
+            timer.0 = Timer::from_seconds(0.15, TimerMode::Once);
+        }
+    }
+}
+
 pub fn spawn_player(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
@@ -82,7 +161,6 @@ pub fn spawn_player(
 
     // Spawn Player (Lot of Components)
     commands.spawn((
-        GlobalTransform::default(),
         transform,
         Mesh2d(meshes.add(Circle::new(player.hitbox_radius))),
         MeshMaterial2d(materials.add(Color::srgb(0.3, 0.3, 0.3))),
@@ -96,7 +174,13 @@ pub fn spawn_player(
         OrbitalMover::default(),
         Health::default(),
         player,
+    ))
+    .insert((
+        // State Combat system
+        PlayerAction::default(),
+        ActionTimer(Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Once)),
     ));
+
 }
 
 pub fn normal_movement(
@@ -286,7 +370,7 @@ pub fn lock_unlock_closest_enemy(
     let Ok((_, mut player)) = player_query.single_mut() else { return; };
     let Ok(enemy_transform) = closest_enemy_query.single() else { return; };
 
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::Tab) {
         player.locked_on = !player.locked_on;
         println!("Locked on {} to {:?}", player.locked_on, enemy_transform.translation.truncate());
     }

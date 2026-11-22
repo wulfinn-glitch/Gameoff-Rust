@@ -4,6 +4,7 @@ pub mod helpers;
 pub mod config;
 pub mod bullet;
 pub mod health;
+pub mod states;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -20,6 +21,7 @@ use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
 use crate::health::monitor_health;
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
+use crate::states::{MyGamplaySet, MyPausedState};
 
 fn main() {
     App::new()
@@ -47,15 +49,26 @@ fn main() {
         .add_plugins(EguiPlugin::default())
         .add_plugins(PrettyTextPlugin)
         // .add_plugins(WorldInspectorPlugin::new())
+
+        // Resources
         .insert_resource(ClearColor(Color::srgb(0.08, 0.08, 0.12)))
         .insert_resource(DoublePressTracker::default())
         .insert_resource(DebugMode(true))
+
+        // States
+        // .insert_state(MyPausedState::default())
+
+        // Configure state sets
+        // .configure_sets(Update, MyGamplaySet
+        //         .run_if(in_state(MyPausedState::Running))
+        // )
+
+        // Systems
         .add_systems(
             Update,
             (sync_rapier_debug.run_if(resource_changed::<DebugMode>),
              toggle_debug_mode)
         )
-
         .add_systems(Startup, setup)
         .add_systems(Startup, setup_fps_counter)
 
@@ -67,11 +80,14 @@ fn main() {
         .add_systems(Update, normal_movement)
         .add_systems(Update, orbital_movement)
         .add_systems(Update, find_closest_enemy)
+        .add_systems(Update, (start_action, tick_action).chain())
+        .add_systems(Update, debug_action)
 
         // Enemy Systems
         .add_systems(Update, detect_player_in_range)
         .add_systems(Update, target_closest_enemy)
         .add_systems(Update, lock_unlock_closest_enemy)
+        .add_systems(Update, move_to_preferred_dist)
 
         // Projectile System
         .add_systems(Update, shoot_player)

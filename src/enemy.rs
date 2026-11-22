@@ -16,6 +16,7 @@ pub struct Enemy{
     pub velocity: Vec2,
     pub hitbox_radius: f32,
     pub player_detect_dist: f32,
+    pub move_speed: f32,
     pub turn_speed: f32,
     pub preferred_player_range: Vec2, // How far it prefers the player to be
     pub player_in_range: bool,
@@ -29,12 +30,44 @@ impl Default for Enemy{
         Self{
             velocity: Vec2::default(),
             hitbox_radius: 25.0,
-            player_detect_dist: 500.0, // Also the dist player is at if inside
+            player_detect_dist: 250.0, // Also the dist player is at if inside
+            move_speed: 75.0,
             turn_speed: 20.0,
-            preferred_player_range: Vec2::new(200.0, 250.0),
+            preferred_player_range: Vec2::new(100.0, 150.0),
             player_in_range: false,
         }
     }
+}
+
+pub fn move_to_preferred_dist(
+    player_query: Query<&Transform, With<Player>>,
+    mut enemy_query: Query<(&Transform, &mut Enemy, &mut Velocity)>
+){
+    let Ok(player_transform) = player_query.single() else { return; };
+
+    for (enemy_transform, mut enemy, mut vel) in enemy_query.iter_mut() {
+        let to_player = (enemy_transform.translation.truncate() - player_transform.translation.truncate());
+        let dist = to_player.length();
+        let direction = to_player.normalize();
+
+        // Not in range
+        if dist < enemy.preferred_player_range.x {
+            // Move towards player
+            vel.linvel = direction * enemy.move_speed;
+            enemy.player_in_range = true;
+            continue;
+        }
+
+        if dist > enemy.preferred_player_range.y && dist <= enemy.player_detect_dist{
+            vel.linvel = -direction * enemy.move_speed;
+            enemy.player_in_range = true;
+            continue;
+        }
+
+        enemy.player_in_range = false;
+        vel.linvel = Vec2::ZERO;
+    }
+
 }
 
 pub fn shoot_player(
@@ -85,9 +118,14 @@ pub fn draw_detect_dist(
 
     for (enemy_transform, enemy) in enemy_q.iter() {
         // Get min dist of enemy.player_detect, and actual dist
-        let dist = (enemy_transform.translation.truncate() - player_transform.translation.truncate()).length();
+        let pos = enemy_transform.translation.truncate();
+        let dist = (pos - player_transform.translation.truncate()).length();
         let radius = f32::min(dist, enemy.player_detect_dist);
-        gizmos.circle_2d(enemy_transform.translation.truncate(), radius, Color::srgb(0.7, 0.92, 0.95));
+
+        gizmos.circle_2d(pos, radius, Color::srgb(0.7, 0.92, 0.95));
+
+        gizmos.circle_2d(pos, enemy.preferred_player_range.x, Color::srgb(0.1, 0.1, 0.1));
+        gizmos.circle_2d(pos, enemy.preferred_player_range.y, Color::srgb(0.1, 0.1, 0.1));
     }
 }
 
@@ -141,7 +179,7 @@ pub fn spawn_enemy(
         GlobalTransform::default(),
         Mesh2d(meshes.add(Circle::new(base_enemy.hitbox_radius))),
         MeshMaterial2d(materials.add(Color::srgb(1.0, 0.7, 0.7))),
-        RigidBody::KinematicPositionBased,
+        RigidBody::KinematicVelocityBased,
         GravityScale(0.0),
         Collider::ball(base_enemy.hitbox_radius),
         LockedAxes::ROTATION_LOCKED,
