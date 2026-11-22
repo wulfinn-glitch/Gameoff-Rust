@@ -9,10 +9,10 @@ use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::prelude::{Ccd, Friction, Velocity};
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
-use crate::health::{spawn_health_bar, Health, HealthBar};
+use crate::health::Health;
 use crate::uibar::*;
 use crate::helpers::DoublePressTracker;
-use crate::posture::{spawn_posture_bar, Posture};
+use crate::posture::Posture;
 
 #[derive(Component)]
 pub struct Player {
@@ -189,24 +189,40 @@ pub fn spawn_player(
 
     )).id();
 
-    // Add health bar
-    commands.entity(ui_root).with_children(|parent| {
-        spawn_health_bar(parent, player, UIBarPlacement{
-            top: Val::Percent(45.0),
-            width: Val::Percent(80.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        });
-    });
+    let health = Health {current: 80, min: 0, max: 100};
+    let posture = Posture {current: 900, min: 0, max: 1000, ..default()};
 
-    // Add posture bar
-    commands.entity(ui_root).with_children(|parent| {
-        spawn_posture_bar(parent, player, UIBarPlacement {
-            top: Val::Percent(45.0),
-            width: Val::Percent(80.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        });
+    // Add health bar
+    commands.entity(ui_root).with_children(|mut parent| {
+        spawn_stat_bar(
+            &mut parent,
+            player,
+            &health,
+            Color::srgb(0.15, 0.2, 0.18),
+            Color::srgb(0.35, 0.9, 0.55),
+            UIBarPlacement{
+                bottom: Val::Percent(5.5),
+                width: Val::Percent(80.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            }
+        );
+    });
+    // Add Posture bar
+    commands.entity(ui_root).with_children(|mut parent| {
+        spawn_stat_bar(
+            &mut parent,
+            player,
+            &posture,
+            Color::srgb(0.22, 0.19, 0.12),
+            Color::srgb(0.95, 0.80, 0.25),
+            UIBarPlacement{
+                bottom: Val::Percent(3.0),
+                width: Val::Percent(80.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            }
+        );
     });
 }
 

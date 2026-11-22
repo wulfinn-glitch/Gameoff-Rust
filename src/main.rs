@@ -21,10 +21,11 @@ use player::*;
 use crate::bullet::*;
 use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
-use crate::health::{monitor_health, update_health_bar, Health};
+use crate::health::{monitor_health, Health};
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
-use crate::posture::{recover_posture, update_posture_bar, Posture};
+use crate::posture::{recover_posture, Posture};
 use crate::states::{MyGamplaySet, MyPausedState};
+use crate::uibar::update_stat_bar;
 
 fn main() {
     App::new()
@@ -78,8 +79,8 @@ fn main() {
         // Helpers
         .add_systems(Update, show_fps)
         .add_systems(Update, monitor_health)
-        .add_systems(Update, update_health_bar)
-        .add_systems(Update, update_posture_bar)
+        .add_systems(Update, update_stat_bar::<Health>)
+        .add_systems(Update, update_stat_bar::<Posture>)
         .add_systems(Update, recover_posture)
 
         // Player systems

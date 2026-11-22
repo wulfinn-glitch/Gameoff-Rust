@@ -29,7 +29,7 @@ impl Default for Enemy{
     fn default() -> Self{
         Self{
             velocity: Vec2::default(),
-            hitbox_radius: 25.0,
+            hitbox_radius: 40.0,
             player_detect_dist: 250.0, // Also the dist player is at if inside
             move_speed: 75.0,
             turn_speed: 20.0,
