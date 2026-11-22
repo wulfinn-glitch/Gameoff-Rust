@@ -28,6 +28,7 @@ pub struct Player {
 pub enum PlayerAction {
     #[default]
     Neutral,
+    NeutralPostureRecover,
     ParryActive,
     ParryRecover,
     AttackWindup,
@@ -96,7 +97,8 @@ pub fn debug_action(query: Query<&PlayerAction, Changed<PlayerAction>>){
 
 pub fn duration(action: PlayerAction) -> f32 {
     match action {
-        PlayerAction::Neutral => 1.0,
+        PlayerAction::Neutral => 0.5,
+        PlayerAction::NeutralPostureRecover => 0.5,
         PlayerAction::ParryActive => 0.15,
         PlayerAction::ParryRecover => 0.15,
         PlayerAction::AttackWindup => 0.10,
@@ -122,7 +124,8 @@ pub fn tick_action(time: Res<Time>, mut query: Query<(&mut PlayerAction, &mut Ac
             PlayerAction::AttackActive => PlayerAction::AttackRecover,
             PlayerAction::AttackRecover => PlayerAction::Neutral,
 
-            PlayerAction::Neutral => PlayerAction::Neutral,
+            PlayerAction::Neutral => PlayerAction::NeutralPostureRecover,
+            PlayerAction::NeutralPostureRecover => PlayerAction::Neutral
         };
 
         timer.0 = Timer::from_seconds(duration(*action), TimerMode::Once);
@@ -136,7 +139,7 @@ pub fn start_action(
     for(mut action, mut timer) in &mut query{
         let can_act = matches!(
             *action,
-            PlayerAction::Neutral | PlayerAction::ParryRecover | PlayerAction::AttackRecover
+            PlayerAction::Neutral | PlayerAction::NeutralPostureRecover | PlayerAction::ParryRecover | PlayerAction::AttackRecover
         );
 
         // cannot act if not part of these states
@@ -184,13 +187,17 @@ pub fn spawn_player(
         ActionTimer(Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Once)),
 
         // Bars
-        Health::default(),
-        Posture::default()
+        // Health::default(),
+        // Posture::default()
 
     )).id();
 
-    let health = Health {current: 80, min: 0, max: 100};
-    let posture = Posture {current: 900, min: 0, max: 1000, ..default()};
+    let health = Health {current: 100, min: 0, max: 100};
+    let posture = Posture {
+        current: 1000,
+        min: 0,
+        max: 1000,
+        recovery_timer: Timer::from_seconds(duration(PlayerAction::NeutralPostureRecover), TimerMode::Repeating), ..default()};
 
     // Add health bar
     commands.entity(ui_root).with_children(|mut parent| {
@@ -224,6 +231,9 @@ pub fn spawn_player(
             }
         );
     });
+
+    // Add to player
+    commands.entity(player).insert((health, posture));
 }
 
 pub fn normal_movement(
