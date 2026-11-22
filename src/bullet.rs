@@ -6,6 +6,7 @@ pub struct Bullet{
     pub speed: f32,
     pub lifetime: f32,
     pub direction: Vec2,
+    pub damage: i32,
 }
 
 #[derive(Component)]
@@ -20,6 +21,7 @@ impl Default for Bullet{
             speed: 450.0,
             lifetime: 3.0,
             direction: Vec2::default(),
+            damage: 10,
         }
     }
 }

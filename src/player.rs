@@ -12,7 +12,7 @@ use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::plugin::ReadRapierContext;
 use bevy_rapier2d::prelude::{Ccd, ColliderMassProperties, CollisionGroups, Friction, Group, Sensor, Velocity};
 use bevy_rapier2d::render::ColliderDebugColor;
-use crate::bullet::EnemyBullet;
+use crate::bullet::{Bullet, EnemyBullet};
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
 use crate::health::Health;
@@ -328,7 +328,7 @@ pub fn resolve_attack_hits(
 
     // Check for intersection
     for (sensor, kind) in hitbox_q.iter() {
-        if *kind != HitboxKind::Attack { return; }
+        if *kind != HitboxKind::Attack { continue; }
 
         for (a, b, intersecting) in context.intersection_pairs_with(sensor){
             if !intersecting { continue; }
@@ -346,6 +346,29 @@ pub fn resolve_attack_hits(
             if let Ok(mut health) = health_q.get_mut(other){
                 health.current -= 10;
                 println!("Enemy Health: {:?}", health.current);
+            }
+        }
+    }
+}
+
+pub fn receive_bullet_hits(
+    mut commands: Commands,
+    rapier: ReadRapierContext,
+    bullet_q: Query<(Entity, &Bullet)>,
+    mut player_q: Query<&mut Health, With<Player>>,
+) {
+    let Ok(context) = rapier.single() else { return; };
+
+    for (bullet_entity, bullet) in bullet_q.iter() {
+        for (a, b, intersecting) in context.intersection_pairs_with(bullet_entity){
+            if !intersecting { continue; }
+
+            let other = if a == bullet_entity { b } else { a };
+
+            if let Ok(mut health) = player_q.get_mut(other){
+                health.current -= bullet.damage;
+                commands.entity(bullet_entity).despawn();
+                break;
             }
         }
     }

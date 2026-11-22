@@ -93,6 +93,7 @@ fn main() {
             resolve_attack_hits,
             resolve_parry,
         ).chain())
+        .add_systems(Update, receive_bullet_hits)
         .add_systems(Update, debug_action)
 
         // Enemy Systems
