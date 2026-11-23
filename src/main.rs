@@ -7,12 +7,14 @@ pub mod health;
 pub mod states;
 pub mod uibar;
 pub mod posture;
+pub mod grid;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use bevy::render::RenderPlugin;
 use bevy::render::settings::{PowerPreference, WgpuSettings};
+use bevy::sprite_render::Material2dPlugin;
 use bevy::window::{PresentMode, WindowMode, WindowResolution};
 
 use bevy_egui::EguiPlugin;
@@ -21,6 +23,7 @@ use player::*;
 use crate::bullet::*;
 use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
+use crate::grid::{spawn_grid, GridFx, GridMaterial, update_grid};
 use crate::health::{monitor_health, Health};
 use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
 use crate::posture::{recover_posture, Posture};
@@ -51,12 +54,15 @@ fn main() {
         .add_plugins(RapierDebugRenderPlugin::default().disabled())
         .add_plugins(EguiPlugin::default())
         .add_plugins(PrettyTextPlugin)
+        .add_plugins(Material2dPlugin::<GridMaterial>::default())
         // .add_plugins(WorldInspectorPlugin::new())
 
         // Resources
         .insert_resource(ClearColor(Color::srgb(0.08, 0.08, 0.12)))
         .insert_resource(DoublePressTracker::default())
         .insert_resource(DebugMode(true))
+
+        .init_resource::<GridFx>()
 
         // States
         // .insert_state(MyPausedState::default())
@@ -72,10 +78,12 @@ fn main() {
             (sync_rapier_debug.run_if(resource_changed::<DebugMode>),
              toggle_debug_mode)
         )
+        // .add_systems(Startup, spawn_grid)
         .add_systems(Startup, setup)
         .add_systems(Startup, setup_fps_counter)
 
         // Helpers
+        // .add_systems(Update, update_grid)
         .add_systems(Update, show_fps)
         .add_systems(Update, monitor_health)
         .add_systems(Update, update_stat_bar::<Health>)
@@ -93,6 +101,7 @@ fn main() {
             resolve_attack_hits,
             resolve_parry,
             receive_bullet_hits,
+            flash_attack_swing,
         ).chain())
         .add_systems(Update, debug_action)
 

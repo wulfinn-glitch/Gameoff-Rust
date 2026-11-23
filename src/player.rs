@@ -15,6 +15,7 @@ use bevy_rapier2d::render::ColliderDebugColor;
 use crate::bullet::{Bullet, EnemyBullet};
 use crate::config::DebugMode;
 use crate::enemy::{Closest, Enemy};
+use crate::grid::GridFx;
 use crate::health::Health;
 use crate::uibar::*;
 use crate::helpers::{DoublePressTracker, GROUP_ENEMY, GROUP_HITBOX, GROUP_PLAYER};
@@ -351,13 +352,14 @@ fn hitbox_color(kind: HitboxKind, action: PlayerAction ) -> Hsla {
 
 pub fn resolve_attack_hits(
     rapier: ReadRapierContext,
-    player_q: Query<&PlayerAction, With<Player>>,
+    player_q: Query<(&PlayerAction, &Transform), With<Player>>,
     hitbox_q: Query<(Entity, &HitboxKind)>,
-    enemy_q: Query<(), With<Enemy>>,
-    mut health_q: Query<&mut Health, With<Enemy>>,
+    mut enemy_q: Query<(&Transform, &mut Health), With<Enemy>>,
     mut already_hit: Local<HashSet<Entity>>,
+    mut fx: ResMut<GridFx>,
 ) {
-    let Ok(action) = player_q.single() else { return; };
+    let Ok((action, player_transform)) = player_q.single() else { return; };
+    let player_pos = player_transform.translation.truncate();
 
     if *action != PlayerAction::AttackActive {
         already_hit.clear();
@@ -374,19 +376,20 @@ pub fn resolve_attack_hits(
             if !intersecting { continue; }
 
             let other = if a == sensor { b } else { a };
-            if !enemy_q.contains(other){
-                continue;
-            }
+
+            let Ok((enemy_transform, mut health)) = enemy_q.get_mut(other) else { continue; };
 
             // One hit per swing per enemy
             if !already_hit.insert(other){
                 continue;
             }
 
-            if let Ok(mut health) = health_q.get_mut(other){
-                health.current -= 10;
-                println!("Enemy Health: {:?}", health.current);
-            }
+            health.current -= 10;
+            println!("Enemy Health: {:?}", health.current);
+
+            let enemy_pos = enemy_transform.translation.truncate();
+            let dir = (enemy_pos - player_pos).normalize_or_zero();
+            fx.flash(enemy_pos, dir, 1.0, 430.0, 0.7);
         }
     }
 }
@@ -394,22 +397,41 @@ pub fn resolve_attack_hits(
 pub fn receive_bullet_hits(
     mut commands: Commands,
     rapier: ReadRapierContext,
-    bullet_q: Query<(Entity, &Bullet), With<EnemyBullet>>,
-    mut player_q: Query<&mut Health, With<Player>>,
+    bullet_q: Query<(Entity, &Bullet, &Transform), With<EnemyBullet>>,
+    mut player_q: Query<(&mut Health, &Transform), With<Player>>,
+    mut fx: ResMut<GridFx>,
 ) {
     let Ok(context) = rapier.single() else { return; };
 
-    for (bullet_entity, bullet) in bullet_q.iter() {
+    for (bullet_entity, bullet, bullet_transform) in bullet_q.iter() {
         for (a, b, intersecting) in context.intersection_pairs_with(bullet_entity){
             if !intersecting { continue; }
 
             let other = if a == bullet_entity { b } else { a };
 
-            if let Ok(mut health) = player_q.get_mut(other){
+            if let Ok((mut health, transform)) = player_q.get_mut(other){
                 health.current -= bullet.damage;
                 commands.entity(bullet_entity).despawn();
+                let pos = bullet_transform.translation.truncate();
+                let dir = bullet.direction.normalize_or_zero(); // back toward the shooter
+                fx.flash(pos, dir, 0.8, 380.0, 0.5);
                 break;
             }
+        }
+    }
+}
+
+pub fn flash_attack_swing(
+    player_q: Query<(&Transform, &PlayerAction), (Changed<PlayerAction>, With<Player>)>,
+    mut fx: ResMut<GridFx>,
+) {
+    for (transform, action) in player_q.iter() {
+        if *action == PlayerAction::AttackActive{
+            let pos = transform.translation.truncate();
+            // Sprite/hitbox face local +Y. Locked-on rotation already aims it at the enemy,
+            // so forward is correct whether locked on or moving.
+            let dir = transform.local_y().xy().normalize_or_zero();
+            fx.flash(pos, dir, 0.5, 300.0, 0.8);
         }
     }
 }
@@ -417,11 +439,12 @@ pub fn receive_bullet_hits(
 pub fn resolve_parry(
     mut commands: Commands,
     rapier: ReadRapierContext,
-    mut player_q: Query<(&PlayerAction, &mut Health, &mut Posture), With<Player>>,
+    mut player_q: Query<(&PlayerAction, &mut Health, &mut Posture, &Transform), With<Player>>,
     hitbox_q: Query<(Entity, &HitboxKind)>,
-    bullet_q: Query<(&Bullet), With<EnemyBullet>>,
+    bullet_q: Query<(&Bullet, &Transform), With<EnemyBullet>>,
+    mut fx: ResMut<GridFx>,
 ) {
-    let Ok((action, mut health, mut posture)) = player_q.single_mut() else {
+    let Ok((action, mut health, mut posture, player_transform)) = player_q.single_mut() else {
         return;
     };
 
@@ -445,7 +468,7 @@ pub fn resolve_parry(
             }
 
             let other = if a == sensor { b } else { a };
-            let Ok(bullet) = bullet_q.get(other) else {
+            let Ok((bullet, bullet_transform)) = bullet_q.get(other) else {
                 continue;
             };
 
@@ -464,6 +487,12 @@ pub fn resolve_parry(
                     posture.current = after;
                 }
             }
+
+            let player_pos = player_transform.translation.truncate();
+            let pos = bullet_transform.translation.truncate();
+            let dir = (pos - player_pos).normalize_or_zero(); // toward the incoming bullet
+            let (amp, speed) = if parrying { (1.2, 500.0) } else { (0.6, 350.0) };
+            fx.flash(pos, dir, amp, speed, 0.5);
 
             commands.entity(other).despawn();
         }
