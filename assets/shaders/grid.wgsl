@@ -9,6 +9,9 @@ struct GridParams {
     impacts: array<vec4<f32>, 32>,   // xy = pos, z = age, w = amplitude
     impact_dirs: array<vec4<f32>, 32>, // xy = dir, z = speed, w = half-angle
     bullets: array<vec4<f32>, 32>,   // xy = pos
+    grid_base: vec4<f32>,            // dark background base (linear rgb)
+    grid_line: vec4<f32>,            // low-energy grid line colour (linear rgb)
+    grid_impact: vec4<f32>,          // high-energy shockwave colour (linear rgb)
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> grid: GridParams;
@@ -19,27 +22,6 @@ fn hash21(p: vec2<f32>) -> f32 {
     var q = fract(p * vec2<f32>(123.34, 456.21));
     q = q + dot(q, q + 45.32);
     return fract(q.x * q.y);
-}
-
-fn hue2rgb(p: f32, q: f32, t_in: f32) -> f32 {
-    var t = t_in;
-    if (t < 0.0) { t = t + 1.0; }
-    if (t > 1.0) { t = t - 1.0; }
-    if (t < 1.0 / 6.0) { return p + (q - p) * 6.0 * t; }
-    if (t < 0.5) { return q; }
-    if (t < 2.0 / 3.0) { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
-    return p;
-}
-
-fn hsl(h: f32, s: f32, l: f32) -> vec3<f32> {
-    let q = select(l * (1.0 + s), l + s - l * s, l < 0.5);
-    let p = 2.0 * l - q;
-    let hk = h / 360.0;
-    return vec3<f32>(
-        hue2rgb(p, q, hk + 1.0 / 3.0),
-        hue2rgb(p, q, hk),
-        hue2rgb(p, q, hk - 1.0 / 3.0),
-    );
 }
 
 @fragment
@@ -115,9 +97,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let v = clamp(1.25 - length(world / vec2<f32>(400.0, 400.0)), 0.0, 1.0);
 
     let e = min(energy, 1.4);
-    let col = hsl(195.0 + e * 75.0, 0.9, 0.42 + min(e, 1.0) * 0.38);
-    let glow = col * (0.09 + 0.9 * min(e, 1.0)) * mask * v;
+    let t = clamp(e, 0.0, 1.0);
+    // Blend from the calm grid-line colour up to the hot impact colour.
+    let col = mix(grid.grid_line.rgb, grid.grid_impact.rgb, t);
+    let glow = col * (0.09 + 0.9 * t) * mask * v;
 
-    let base = vec3<f32>(0.02, 0.025, 0.05);
-    return vec4<f32>(base + glow, 1.0);
+    return vec4<f32>(grid.grid_base.rgb + glow, 1.0);
 }

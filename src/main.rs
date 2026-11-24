@@ -8,6 +8,10 @@ pub mod states;
 pub mod uibar;
 pub mod posture;
 pub mod grid;
+pub mod slash;
+pub mod juice;
+pub mod lockon_ui;
+pub mod fx;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -17,7 +21,7 @@ use bevy::render::settings::{PowerPreference, WgpuSettings};
 use bevy::sprite_render::Material2dPlugin;
 use bevy::window::{PresentMode, WindowMode, WindowResolution};
 
-use bevy_egui::EguiPlugin;
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use bevy_pretty_text::prelude::*;
 use player::*;
 use crate::bullet::*;
@@ -25,8 +29,14 @@ use crate::enemy::*;
 use crate::config::{sync_rapier_debug, DebugMode, toggle_debug_mode};
 use crate::grid::{spawn_grid, GridFx, GridMaterial, update_grid};
 use crate::health::{monitor_health, Health};
-use crate::helpers::{setup_fps_counter, show_fps, spawn_text, DoublePressTracker};
+use crate::helpers::{setup_fps_counter, show_fps, DoublePressTracker};
 use crate::posture::{recover_posture, Posture};
+use crate::slash::{animate_slashes, setup_slash_assets};
+use crate::juice::{apply_camera_shake, apply_hitstop, CombatFeel};
+use crate::fx::{
+    advance_hue, apply_background, fx_debug_menu, toggle_fx_menu, FxPalette,
+};
+use crate::lockon_ui::{setup_lock_ui, tint_reticle, update_lock_reticle, LockUi};
 use crate::uibar::update_stat_bar;
 
 fn main() {
@@ -63,6 +73,9 @@ fn main() {
         .insert_resource(DebugMode(true))
 
         .init_resource::<GridFx>()
+        .init_resource::<CombatFeel>()
+        .init_resource::<LockUi>()
+        .init_resource::<FxPalette>()
 
         // States
         // .insert_state(MyPausedState::default())
@@ -78,12 +91,14 @@ fn main() {
             (sync_rapier_debug.run_if(resource_changed::<DebugMode>),
              toggle_debug_mode)
         )
-        // .add_systems(Startup, spawn_grid)
+        .add_systems(Startup, spawn_grid)
         .add_systems(Startup, setup)
+        .add_systems(Startup, setup_slash_assets)
         .add_systems(Startup, setup_fps_counter)
+        .add_systems(Startup, setup_lock_ui)
 
         // Helpers
-        // .add_systems(Update, update_grid)
+        .add_systems(Update, update_grid)
         .add_systems(Update, show_fps)
         .add_systems(Update, monitor_health)
         .add_systems(Update, update_stat_bar::<Health>)
@@ -97,19 +112,27 @@ fn main() {
         .add_systems(Update, (
             start_action,
             tick_action,
+            spawn_action_effects,
             color_hitboxes,
             resolve_attack_hits,
             resolve_parry,
             receive_bullet_hits,
             flash_attack_swing,
         ).chain())
+        .add_systems(Update, (apply_hitstop, apply_camera_shake))
+        .add_systems(Update, (advance_hue, apply_background, toggle_fx_menu))
+        .add_systems(EguiPrimaryContextPass, fx_debug_menu)
+        .add_systems(Update, animate_slashes)
         .add_systems(Update, debug_action)
 
         // Enemy Systems
         .add_systems(Update, detect_player_in_range)
         .add_systems(Update, target_closest_enemy)
         .add_systems(Update, lock_unlock_closest_enemy)
+        .add_systems(Update, update_lock_reticle.after(lock_unlock_closest_enemy))
+        .add_systems(Update, tint_reticle)
         .add_systems(Update, move_to_preferred_dist)
+        .add_systems(Update, animate_hit_flash)
 
         // Projectile System
         .add_systems(Update, shoot_player)

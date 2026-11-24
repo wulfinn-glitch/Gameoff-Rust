@@ -12,14 +12,17 @@ use bevy_rapier2d::geometry::Collider;
 use bevy_rapier2d::plugin::ReadRapierContext;
 use bevy_rapier2d::prelude::{Ccd, ColliderMassProperties, CollisionGroups, Friction, Group, Sensor, Velocity};
 use bevy_rapier2d::render::ColliderDebugColor;
-use crate::bullet::{Bullet, EnemyBullet};
+use crate::bullet::{Bullet, EnemyBullet, LifeTime};
 use crate::config::DebugMode;
-use crate::enemy::{Closest, Enemy};
+use crate::enemy::{Closest, Enemy, HitFlash, ENEMY_COLOR};
 use crate::grid::GridFx;
 use crate::health::Health;
 use crate::uibar::*;
 use crate::helpers::{DoublePressTracker, GROUP_ENEMY, GROUP_HITBOX, GROUP_PLAYER};
 use crate::posture::Posture;
+use crate::slash::{spawn_slash, spawn_slash_cluster, SlashAssets, SlashShape};
+use crate::juice::CombatFeel;
+use crate::fx::FxPalette;
 
 #[derive(Component)]
 pub struct Player {
@@ -53,6 +56,46 @@ pub enum HitboxKind {
 
 #[derive(Component)]
 pub struct ActionTimer(pub Timer);
+
+/// How far through the attack chain the player is.
+#[derive(Component)]
+pub struct Combo {
+    pub step: u8,
+    pub max: u8,
+    /// An attack press made during `AttackActive`, to be consumed when it ends.
+    pub queued: bool,
+}
+
+impl Default for Combo {
+    fn default() -> Self {
+        Self { step: 0, max: 3, queued: false }
+    }
+}
+
+/// Post-action lockouts so attack/parry can't be spammed.
+#[derive(Component, Default)]
+pub struct Cooldowns {
+    attack: f32,
+    parry: f32,
+}
+
+const ATTACK_COOLDOWN: f32 = 0.18;
+const PARRY_COOLDOWN: f32 = 0.35;
+
+impl Cooldowns {
+    fn tick(&mut self, dt: f32) {
+        self.attack = (self.attack - dt).max(0.0);
+        self.parry = (self.parry - dt).max(0.0);
+    }
+
+    fn attack_ready(&self) -> bool {
+        self.attack <= 0.0
+    }
+
+    fn parry_ready(&self) -> bool {
+        self.parry <= 0.0
+    }
+}
 
 pub struct DashState {
     pub timer: Timer,
@@ -126,10 +169,12 @@ pub fn duration(action: PlayerAction) -> f32 {
 
 pub fn tick_action(
     time: Res<Time>,
-    mut query: Query<(&mut PlayerAction, &mut ActionTimer)>,
+    mut query: Query<(&mut PlayerAction, &mut ActionTimer, &mut Combo, &mut Cooldowns)>,
     keys: Res<ButtonInput<KeyCode>>
 ) {
-    for (mut action, mut timer) in &mut query{
+    for (mut action, mut timer, mut combo, mut cooldowns) in &mut query{
+
+        cooldowns.tick(time.delta_secs());
 
         // Block has no timer
         if *action == PlayerAction::Block{
@@ -151,12 +196,33 @@ pub fn tick_action(
                     PlayerAction::ParryRecover
                 }
             }
-            PlayerAction::ParryRecover => PlayerAction::Neutral,
-            PlayerAction::BlockRecover => PlayerAction::Neutral,
+            PlayerAction::ParryRecover => {
+                cooldowns.parry = PARRY_COOLDOWN;
+                PlayerAction::Neutral
+            }
+            PlayerAction::BlockRecover => {
+                cooldowns.parry = PARRY_COOLDOWN;
+                PlayerAction::Neutral
+            }
 
             PlayerAction::AttackWindup => PlayerAction::AttackActive,
-            PlayerAction::AttackActive => PlayerAction::AttackRecover,
-            PlayerAction::AttackRecover => PlayerAction::Neutral,
+            PlayerAction::AttackActive => {
+                // Consume a buffered press: chain straight into the next windup.
+                if combo.queued && combo.step + 1 < combo.max {
+                    combo.queued = false;
+                    combo.step += 1;
+                    PlayerAction::AttackWindup
+                } else {
+                    combo.queued = false;
+                    PlayerAction::AttackRecover
+                }
+            }
+            PlayerAction::AttackRecover => {
+                combo.step = 0;
+                combo.queued = false;
+                cooldowns.attack = ATTACK_COOLDOWN;
+                PlayerAction::Neutral
+            }
 
             PlayerAction::Neutral => PlayerAction::NeutralPostureRecover,
             PlayerAction::NeutralPostureRecover => PlayerAction::Neutral,
@@ -189,15 +255,21 @@ pub fn sector_collider(
 
 pub fn start_action(
     keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut PlayerAction, &mut ActionTimer)>)
+    mut query: Query<(&mut PlayerAction, &mut ActionTimer, &mut Combo, &Cooldowns)>)
 {
-    for(mut action, mut timer) in &mut query{
+    for(mut action, mut timer, mut combo, cooldowns) in &mut query{
 
         if *action == PlayerAction::Block {
             if !keys.pressed(KeyCode::KeyQ) {
                 *action = PlayerAction::BlockRecover;
                 timer.0 = Timer::from_seconds(duration(PlayerAction::BlockRecover), TimerMode::Once);
             }
+            continue;
+        }
+
+        // Buffer an attack press made during the active frames.
+        if *action == PlayerAction::AttackActive && keys.just_pressed(KeyCode::KeyE) {
+            combo.queued = true;
             continue;
         }
 
@@ -213,11 +285,22 @@ pub fn start_action(
         // cannot act if not part of these states
         if !can_act {continue;}
 
-        if keys.just_pressed(KeyCode::KeyQ){
+        if keys.just_pressed(KeyCode::KeyQ) && cooldowns.parry_ready() {
+            combo.step = 0;
+            combo.queued = false;
             *action = PlayerAction::ParryActive;
             timer.0 = Timer::from_seconds(duration(PlayerAction::ParryActive), TimerMode::Once);
         }
         else if keys.just_pressed(KeyCode::KeyE){
+            // Chain into the next hit during recovery, otherwise start fresh.
+            if *action == PlayerAction::AttackRecover && combo.step + 1 < combo.max {
+                combo.step += 1;
+            } else if cooldowns.attack_ready() {
+                combo.step = 0;
+            } else {
+                continue;
+            }
+            combo.queued = false;
             *action = PlayerAction::AttackWindup;
             timer.0 = Timer::from_seconds(duration(PlayerAction::AttackWindup), TimerMode::Once);
         }
@@ -253,6 +336,8 @@ pub fn spawn_player(
         // State Combat system
         PlayerAction::default(),
         ActionTimer(Timer::from_seconds(duration(PlayerAction::Neutral), TimerMode::Once)),
+        Combo::default(),
+        Cooldowns::default(),
 
         CollisionGroups::new(GROUP_PLAYER, Group::ALL),
     )).id();
@@ -351,14 +436,19 @@ fn hitbox_color(kind: HitboxKind, action: PlayerAction ) -> Hsla {
 }
 
 pub fn resolve_attack_hits(
+    mut commands: Commands,
     rapier: ReadRapierContext,
-    player_q: Query<(&PlayerAction, &Transform), With<Player>>,
+    player_q: Query<(&PlayerAction, &Transform, &Combo), With<Player>>,
     hitbox_q: Query<(Entity, &HitboxKind)>,
     mut enemy_q: Query<(&Transform, &mut Health), With<Enemy>>,
     mut already_hit: Local<HashSet<Entity>>,
     mut fx: ResMut<GridFx>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<SlashAssets>,
+    palette: Res<FxPalette>,
+    mut feel: ResMut<CombatFeel>,
 ) {
-    let Ok((action, player_transform)) = player_q.single() else { return; };
+    let Ok((action, player_transform, combo)) = player_q.single() else { return; };
     let player_pos = player_transform.translation.truncate();
 
     if *action != PlayerAction::AttackActive {
@@ -384,12 +474,40 @@ pub fn resolve_attack_hits(
                 continue;
             }
 
-            health.current -= 10;
+            let damage = match combo.step {
+                0 => 10,
+                1 => 12,
+                _ => 16,
+            };
+            health.current -= damage;
             println!("Enemy Health: {:?}", health.current);
 
             let enemy_pos = enemy_transform.translation.truncate();
             let dir = (enemy_pos - player_pos).normalize_or_zero();
-            fx.flash(enemy_pos, dir, 1.0, 430.0, 0.7);
+            fx.flash(enemy_pos, dir, 1.0 + combo.step as f32 * 0.2, 430.0, 0.7);
+
+            // Impact spark + hitstop/shake.
+            let mut spark = SlashShape::hit_spark();
+            spark.color = palette.spark_color();
+            spawn_slash(
+                &mut commands,
+                &mut meshes,
+                &assets,
+                enemy_pos,
+                dir,
+                spark,
+                0.16,
+            );
+            feel.punch(
+                0.35 + combo.step as f32 * 0.05,
+                0.035 + combo.step as f32 * 0.012,
+            );
+
+            // White flash on the enemy.
+            commands.entity(other).insert(HitFlash {
+                timer: Timer::from_seconds(0.08, TimerMode::Once),
+                base: ENEMY_COLOR,
+            });
         }
     }
 }
@@ -400,6 +518,7 @@ pub fn receive_bullet_hits(
     bullet_q: Query<(Entity, &Bullet, &Transform), With<EnemyBullet>>,
     mut player_q: Query<(&mut Health, &Transform), With<Player>>,
     mut fx: ResMut<GridFx>,
+    mut feel: ResMut<CombatFeel>,
 ) {
     let Ok(context) = rapier.single() else { return; };
 
@@ -409,12 +528,13 @@ pub fn receive_bullet_hits(
 
             let other = if a == bullet_entity { b } else { a };
 
-            if let Ok((mut health, transform)) = player_q.get_mut(other){
+            if let Ok((mut health, _transform)) = player_q.get_mut(other){
                 health.current -= bullet.damage;
                 commands.entity(bullet_entity).despawn();
                 let pos = bullet_transform.translation.truncate();
                 let dir = bullet.direction.normalize_or_zero(); // back toward the shooter
                 fx.flash(pos, dir, 0.8, 380.0, 0.5);
+                feel.punch(0.6, 0.05);
                 break;
             }
         }
@@ -436,6 +556,63 @@ pub fn flash_attack_swing(
     }
 }
 
+/// Spawn the procedural slash/parry visuals when the action state changes.
+pub fn spawn_action_effects(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<SlashAssets>,
+    palette: Res<FxPalette>,
+    mut feel: ResMut<CombatFeel>,
+    mut seed: Local<u64>,
+    player_q: Query<(&Transform, &PlayerAction, &Combo), (Changed<PlayerAction>, With<Player>)>,
+) {
+    for (transform, action, combo) in &player_q {
+        let pos = transform.translation.truncate();
+        let facing = transform.local_y().xy().normalize_or_zero();
+
+        match action {
+            PlayerAction::AttackActive => {
+                *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let count = 3 + combo.step as usize;
+                let mut shape = SlashShape::for_step(combo.step);
+                shape.color = palette.attack_color();
+                spawn_slash_cluster(
+                    &mut commands,
+                    &mut meshes,
+                    &assets,
+                    pos,
+                    facing,
+                    shape,
+                    0.16,
+                    count,
+                    *seed ^ (combo.step as u64).wrapping_mul(0x2545_F491_4F6C_DD1D),
+                );
+                // Tiny kick on every swing; landing a hit adds more.
+                feel.punch(0.12, 0.0);
+            }
+            PlayerAction::ParryActive => {
+                *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                // A couple of overlapping shield arcs.
+                let mut shape = SlashShape::parry_arc();
+                shape.color = palette.parry_color();
+                spawn_slash_cluster(
+                    &mut commands,
+                    &mut meshes,
+                    &assets,
+                    pos,
+                    facing,
+                    shape,
+                    0.16,
+                    2,
+                    *seed,
+                );
+                feel.punch(0.08, 0.0);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn resolve_parry(
     mut commands: Commands,
     rapier: ReadRapierContext,
@@ -443,6 +620,12 @@ pub fn resolve_parry(
     hitbox_q: Query<(Entity, &HitboxKind)>,
     bullet_q: Query<(&Bullet, &Transform), With<EnemyBullet>>,
     mut fx: ResMut<GridFx>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    assets: Res<SlashAssets>,
+    palette: Res<FxPalette>,
+    mut feel: ResMut<CombatFeel>,
+    mut seed: Local<u64>,
 ) {
     let Ok((action, mut health, mut posture, player_transform)) = player_q.single_mut() else {
         return;
@@ -489,10 +672,96 @@ pub fn resolve_parry(
             }
 
             let player_pos = player_transform.translation.truncate();
+            let facing = player_transform.local_y().xy().normalize_or_zero();
             let pos = bullet_transform.translation.truncate();
             let dir = (pos - player_pos).normalize_or_zero(); // toward the incoming bullet
             let (amp, speed) = if parrying { (1.2, 500.0) } else { (0.6, 350.0) };
             fx.flash(pos, dir, amp, speed, 0.5);
+
+            let mut parry_pop = SlashShape::parry_pop();
+            parry_pop.color = palette.parry_color();
+            let mut spark = SlashShape::hit_spark();
+            spark.color = palette.spark_color();
+            let mut arc = SlashShape::parry_arc();
+            arc.color = palette.parry_color();
+
+            if parrying {
+                *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+
+                // Confident burst at the point of contact.
+                spawn_slash_cluster(
+                    &mut commands,
+                    &mut meshes,
+                    &assets,
+                    pos,
+                    dir,
+                    parry_pop,
+                    0.24,
+                    3,
+                    *seed,
+                );
+                spawn_slash_cluster(
+                    &mut commands,
+                    &mut meshes,
+                    &assets,
+                    pos,
+                    dir,
+                    spark,
+                    0.18,
+                    2,
+                    *seed ^ 0x00A5_5A5A,
+                );
+                // Shield arcs flaring out from the player.
+                spawn_slash_cluster(
+                    &mut commands,
+                    &mut meshes,
+                    &assets,
+                    player_pos,
+                    facing,
+                    arc,
+                    0.20,
+                    2,
+                    *seed ^ 0x1234_5678,
+                );
+
+                // Freeze the world for a beat so the parry reads.
+                feel.punch(0.7, 0.13);
+
+                // Deflect the bullet cleanly: facing - incoming.
+                let incoming = bullet.direction.normalize_or_zero();
+                let mut deflected = (facing - incoming).normalize_or_zero();
+                if deflected.length_squared() < 1e-6 {
+                    deflected = -incoming;
+                }
+                if deflected.length_squared() < 1e-6 {
+                    deflected = Vec2::Y;
+                }
+
+                commands.spawn((
+                    GlobalTransform::default(),
+                    Mesh2d(meshes.add(Circle::new(9.0))),
+                    MeshMaterial2d(materials.add(palette.deflect_color())),
+                    LifeTime(Timer::from_seconds(2.0, TimerMode::Once)),
+                    Transform::from_xyz(pos.x, pos.y, 0.0),
+                    Bullet {
+                        direction: deflected,
+                        speed: 900.0,
+                        ..default()
+                    },
+                ));
+            } else {
+                // Block: stop the bullet, smaller reaction.
+                spawn_slash(
+                    &mut commands,
+                    &mut meshes,
+                    &assets,
+                    pos,
+                    dir,
+                    parry_pop,
+                    0.16,
+                );
+                feel.punch(0.3, 0.035);
+            }
 
             commands.entity(other).despawn();
         }
@@ -501,14 +770,11 @@ pub fn resolve_parry(
 
 pub fn normal_movement(
     keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
-    closest_enemy_query: Query<&Transform, With<Closest>>,
+    mut query: Query<(&mut Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
     time: Res<Time>,
 ){
     let dt = time.delta_secs();
-    let Ok(target_enemy) = closest_enemy_query.single() else { return; };
-
-    let (transform, mut velocity, player, mut mover) = query.iter_mut().next().unwrap();
+    let Ok((mut transform, mut velocity, player, _mover)) = query.single_mut() else { return; };
 
     // Return if locked on
     if player.locked_on {return;}
@@ -526,20 +792,18 @@ pub fn normal_movement(
     velocity.linvel = target_vel;
 
     if desired.length_squared() < 1e-6 {
-        velocity.angvel = 0.0;
         return;
     }
 
-    // Assuming sprite/collider faces +Y at rotation 0; use `transform.local_x().xy()` if +X
-    let forward = transform.local_y().xy().normalize();
-    let angle_diff = forward.angle_to(desired);
-
-    velocity.angvel = (angle_diff / dt).clamp(-player.turn_speed, player.turn_speed);
+    // Sprite/collider/hitboxes face local +Y, so rotate the transform toward the
+    // movement direction. Rapier rotation is locked; we drive it manually.
+    let target = Quat::from_rotation_arc_2d(Vec2::Y, desired);
+    transform.rotation = transform.rotation.rotate_towards(target, player.turn_speed * dt);
 }
 
 pub fn orbital_movement(
     keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&Transform, &mut Velocity, &Player, &mut OrbitalMover)>,
+    mut query: Query<(&mut Transform, &mut Velocity, &Player, &mut OrbitalMover), Without<Closest>>,
     closest_enemy_query: Query<&Transform, With<Closest>>,
     time: Res<Time>,
     mut tracker: ResMut<DoublePressTracker>,
@@ -547,9 +811,9 @@ pub fn orbital_movement(
 ){
 
     let dt = time.delta_secs();
-    let Ok(target_enemy) = closest_enemy_query.single() else { return; };
+    let Some(target_enemy) = closest_enemy_query.iter().next() else { return; };
 
-    let (transform, mut velocity, player, mut mover) = query.iter_mut().next().unwrap();
+    let Ok((mut transform, mut velocity, player, mut mover)) = query.single_mut() else { return; };
 
     // Return if not locked on
     if !player.locked_on {return;}
@@ -601,52 +865,53 @@ pub fn orbital_movement(
 
     velocity.linvel = orbit_vel + zoom_vel;
 
-    let forward = transform.local_y().xy().normalize();
-    let desired = to_enemy.normalize();
-
-    let angle_diff = forward.angle_to(desired);
-    let desired_angvel = (angle_diff / dt).clamp(-20.0, 20.0);
-    velocity.angvel = desired_angvel;
+    // Always face the locked-on enemy (local +Y is forward).
+    let target = Quat::from_rotation_arc_2d(Vec2::Y, to_enemy.normalize());
+    transform.rotation = transform.rotation.rotate_towards(target, player.turn_speed * dt);
 }
 
 pub fn find_closest_enemy(
     mut commands: Commands,
-    player_query: Query<(&Transform, &Player)>,
+    mut player_query: Query<(&Transform, &mut Player)>,
     enemies_query: Query<(Entity, &Transform), With<Enemy>>,
     current_closest_query: Query<Entity, With<Closest>>,
 ){
-    let Ok((player_transform, player)) = player_query.single() else {
-         return;
+    let Ok((player_transform, mut player)) = player_query.single_mut() else {
+        return;
     };
 
-    // Return if player is already locked on to some enemy
+    // Keep the current lock target while it still exists. If it died, release
+    // the lock so we fall back to the nearest enemy (or free movement).
     if player.locked_on {
-        return;
+        if current_closest_query.iter().next().is_some() {
+            return;
+        }
+        player.locked_on = false;
     }
 
     let player_pos = player_transform.translation.truncate();
 
-    let Some((new_closest, _)) = enemies_query
+    let nearest = enemies_query
         .iter()
         .min_by(|(_, transform_a), (_, transform_b)| {
             let dist_a = player_pos.distance_squared(transform_a.translation.truncate());
             let dist_b = player_pos.distance_squared(transform_b.translation.truncate());
 
             dist_a.total_cmp(&dist_b)
-        }) else {
-            for entity in &current_closest_query {
-                commands.entity(entity).remove::<Closest>();
-            }
-        return;
-    };
-    let current_closest = current_closest_query.iter().next();
+        })
+        .map(|(entity, _)| entity);
 
-    if current_closest != Some(new_closest){
-        if let Some(old_entity) = current_closest {
-            commands.entity(old_entity).remove::<Closest>();
+    // Guarantee at most one `Closest`, and that it is the nearest enemy.
+    for entity in current_closest_query.iter() {
+        if Some(entity) != nearest {
+            commands.entity(entity).remove::<Closest>();
         }
+    }
 
-        commands.entity(new_closest).insert(Closest);
+    if let Some(nearest) = nearest {
+        if !current_closest_query.contains(nearest) {
+            commands.entity(nearest).insert(Closest);
+        }
     }
 }
 
@@ -660,7 +925,7 @@ pub fn target_closest_enemy(
 
     let Ok((player_transform, player)) = player_query.single() else { return; };
 
-    if let Ok(enemy_transform) = closest_enemy_query.single() {
+    if let Some(enemy_transform) = closest_enemy_query.iter().next() {
         let color = if player.locked_on { Color::srgb(1.0, 0.0, 0.0)} else {Color::srgb(1.0, 1.0, 1.0)};
         gizmos.line(
             player_transform.translation,
@@ -682,12 +947,16 @@ pub fn lock_unlock_closest_enemy(
     mut player_query: Query<(&Transform, &mut Player)>,
     keys: Res<ButtonInput<KeyCode>>,
 ){
-
     let Ok((_, mut player)) = player_query.single_mut() else { return; };
-    let Ok(enemy_transform) = closest_enemy_query.single() else { return; };
 
-    if keys.just_pressed(KeyCode::Tab) {
-        player.locked_on = !player.locked_on;
-        println!("Locked on {} to {:?}", player.locked_on, enemy_transform.translation.truncate());
+    if !keys.just_pressed(KeyCode::Tab) {
+        return;
+    }
+
+    if player.locked_on {
+        // Always allow releasing, even if the target disappeared.
+        player.locked_on = false;
+    } else if closest_enemy_query.iter().next().is_some() {
+        player.locked_on = true;
     }
 }

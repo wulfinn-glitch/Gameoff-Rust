@@ -12,6 +12,7 @@ use crate::config::DebugMode;
 use crate::health::Health;
 use crate::helpers::GROUP_ENEMY;
 use crate::player::Player;
+use crate::fx::FxPalette;
 
 #[derive(Component)]
 pub struct Enemy{
@@ -26,6 +27,48 @@ pub struct Enemy{
 
 #[derive(Component)]
 pub struct Closest;
+
+/// Base body colour of an enemy.
+pub const ENEMY_COLOR: Color = Color::srgb(1.0, 0.7, 0.7);
+
+/// Brief white flash applied when an attack lands.
+#[derive(Component)]
+pub struct HitFlash {
+    pub timer: Timer,
+    pub base: Color,
+}
+
+pub fn animate_hit_flash(
+    time: Res<Time>,
+    mut commands: Commands,
+    palette: Res<FxPalette>,
+    mut flashes: Query<(Entity, &mut HitFlash, &MeshMaterial2d<ColorMaterial>)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (entity, mut flash, material_handle) in &mut flashes {
+        flash.timer.tick(time.delta());
+
+        let Some(material) = materials.get_mut(&material_handle.0) else {
+            continue;
+        };
+
+        if flash.timer.is_finished() {
+            material.color = flash.base;
+            commands.entity(entity).remove::<HitFlash>();
+            continue;
+        }
+
+        // Flash toward the configured impact colour, easing back to the base.
+        let f = 1.0 - flash.timer.fraction();
+        let base = flash.base.to_srgba();
+        let hot = palette.hit_flash_color().to_srgba();
+        material.color = Color::srgb(
+            base.red + (hot.red - base.red) * f,
+            base.green + (hot.green - base.green) * f,
+            base.blue + (hot.blue - base.blue) * f,
+        );
+    }
+}
 
 impl Default for Enemy{
     fn default() -> Self{
@@ -183,7 +226,7 @@ pub fn spawn_enemy(
         transform,
         GlobalTransform::default(),
         Mesh2d(meshes.add(Circle::new(base_enemy.hitbox_radius))),
-        MeshMaterial2d(materials.add(Color::srgb(1.0, 0.7, 0.7))),
+        MeshMaterial2d(materials.add(ENEMY_COLOR)),
         RigidBody::KinematicVelocityBased,
         GravityScale(0.0),
         Collider::ball(base_enemy.hitbox_radius),

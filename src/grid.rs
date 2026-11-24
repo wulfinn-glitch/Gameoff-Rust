@@ -4,6 +4,7 @@ use bevy::shader::ShaderRef;
 use bevy::sprite_render::{Material2d, Material2dPlugin};
 
 use crate::bullet::Bullet;
+use crate::fx::FxPalette;
 use crate::player::Player;
 
 pub const MAX_IMPACTS: usize = 32;
@@ -20,6 +21,12 @@ pub struct GridParams {
     pub impacts: [Vec4; MAX_IMPACTS],
     pub impact_dirs: [Vec4; MAX_IMPACTS],
     pub bullets: [Vec4; MAX_BULLETS],
+    /// Dark base colour of the background.
+    pub grid_base: Vec4,
+    /// Low-energy grid line colour.
+    pub grid_line: Vec4,
+    /// High-energy shockwave colour.
+    pub grid_impact: Vec4,
 }
 
 impl Default for GridParams {
@@ -33,6 +40,9 @@ impl Default for GridParams {
             impacts: [Vec4::ZERO; MAX_IMPACTS],
             impact_dirs: [Vec4::ZERO; MAX_IMPACTS],
             bullets: [Vec4::ZERO; MAX_BULLETS],
+            grid_base: Vec4::new(0.02, 0.025, 0.05, 1.0),
+            grid_line: Vec4::new(0.1, 0.5, 0.9, 1.0),
+            grid_impact: Vec4::new(0.7, 0.5, 1.0, 1.0),
         }
     }
 }
@@ -108,6 +118,7 @@ pub fn update_grid(
     time: Res<Time>,
     mut fx: ResMut<GridFx>,
     handle: Res<GridHandle>,
+    palette: Res<FxPalette>,
     mut materials: ResMut<Assets<GridMaterial>>,
     player_q: Query<&Transform, With<Player>>,
     bullet_q: Query<&Transform, With<Bullet>>,
@@ -120,6 +131,12 @@ pub fn update_grid(
     let Some(material) = materials.get_mut(&handle.0) else {
         return;
     };
+
+    // Push the palette into the shader every frame so edits (and the optional
+    // hue cycle) show up live.
+    material.params.grid_base = to_linear_vec4(palette.background_color());
+    material.params.grid_line = to_linear_vec4(palette.grid_line_color());
+    material.params.grid_impact = to_linear_vec4(palette.grid_impact_color());
 
     material.params.time = now;
     material.params.impact_count = fx.impacts.len() as u32;
@@ -161,4 +178,10 @@ pub fn update_grid(
     if keys.just_pressed(KeyCode::KeyJ) {
         fx.flash(Vec2::ZERO, Vec2::Y, 1.7, 820.0, 0.6);
     }
+}
+
+/// Convert a Bevy colour into the linear-space `vec4<f32>` the shader expects.
+fn to_linear_vec4(color: Color) -> Vec4 {
+    let c = color.to_linear();
+    Vec4::new(c.red, c.green, c.blue, c.alpha)
 }
