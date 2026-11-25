@@ -20,7 +20,7 @@ use crate::health::Health;
 use crate::uibar::*;
 use crate::helpers::{DoublePressTracker, GROUP_ENEMY, GROUP_HITBOX, GROUP_PLAYER};
 use crate::posture::Posture;
-use crate::slash::{spawn_slash, spawn_slash_cluster, SlashAssets, SlashShape};
+use crate::slash::{spawn_shockwave, spawn_slash, spawn_slash_cluster, SlashAssets, SlashShape};
 use crate::juice::CombatFeel;
 use crate::fx::FxPalette;
 
@@ -700,32 +700,46 @@ pub fn resolve_parry(
                     3,
                     *seed,
                 );
-                spawn_slash_cluster(
-                    &mut commands,
-                    &mut meshes,
-                    &assets,
-                    pos,
-                    dir,
-                    spark,
-                    0.18,
-                    2,
-                    *seed ^ 0x00A5_5A5A,
-                );
-                // Shield arcs flaring out from the player.
-                spawn_slash_cluster(
+                // spawn_slash_cluster(
+                //     &mut commands,
+                //     &mut meshes,
+                //     &assets,
+                //     pos,
+                //     dir,
+                //     spark,
+                //     0.18,
+                //     2,
+                //     *seed ^ 0x00A5_5A5A,
+                // );
+                // // Shield arcs flaring out from the player.
+                // spawn_slash_cluster(
+                //     &mut commands,
+                //     &mut meshes,
+                //     &assets,
+                //     player_pos,
+                //     facing,
+                //     arc,
+                //     0.20,
+                //     2,
+                //     *seed ^ 0x1234_5678,
+                // );
+
+                // Freeze the world for a beat so the parry reads.
+                feel.punch(0.7, 0.13);
+
+                // Clean circular pressure wave rolling off the player, under
+                // the contact burst and the camera shake.
+                let mut wave = SlashShape::shockwave();
+                wave.color = palette.parry_color();
+                spawn_shockwave(
                     &mut commands,
                     &mut meshes,
                     &assets,
                     player_pos,
-                    facing,
-                    arc,
-                    0.20,
-                    2,
-                    *seed ^ 0x1234_5678,
+                    wave,
+                    0.45,
+                    0.3,
                 );
-
-                // Freeze the world for a beat so the parry reads.
-                feel.punch(0.7, 0.13);
 
                 // Deflect the bullet cleanly: facing - incoming.
                 let incoming = bullet.direction.normalize_or_zero();

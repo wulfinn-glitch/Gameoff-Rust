@@ -112,6 +112,26 @@ impl SlashShape {
         }
     }
 
+    /// Clean, full-circle pressure wave for perfect parries and other big
+    /// impacts. Unlike [`Self::parry_pop`] it doesn't sweep: it is a whole ring
+    /// from the first frame and just expands, thins and fades.
+    pub fn shockwave() -> Self {
+        Self {
+            radius: 28.0,
+            thickness: 8.0,
+            taper: 0.0,
+            arc: TAU,
+            bow: 0.0,
+            tilt: 0.0,
+            flip: 1.0,
+            grow: 260.0,
+            spin: 0.0,
+            hot: 1.0,
+            color: Color::srgb(0.45, 1.0, 0.95),
+            segments: 96,
+        }
+    }
+
     /// Small expanding ring at the point an attack lands.
     pub fn hit_spark() -> Self {
         Self {
@@ -159,6 +179,17 @@ pub struct Slash {
     pub mesh: Handle<Mesh>,
 }
 
+/// A whole-circle pressure wave. It is complete on the first frame, so it needs
+/// its own timing curve instead of [`Slash`]'s tip-to-tip reveal.
+#[derive(Component)]
+pub struct Shockwave {
+    pub shape: SlashShape,
+    pub timer: Timer,
+    pub mesh: Handle<Mesh>,
+    /// Fraction of the lifetime spent at full brightness before the fade starts.
+    pub hold: f32,
+}
+
 /// Spawn a slash at `pos`, aimed along `facing` (world space, so it stays put).
 pub fn spawn_slash(
     commands: &mut Commands,
@@ -190,6 +221,36 @@ pub fn spawn_slash(
             shape,
             timer: Timer::from_seconds(lifetime, TimerMode::Once),
             mesh,
+        },
+    ));
+}
+
+/// Spawn a full-circle shockwave centred on `pos`. `hold` is the fraction of
+/// `lifetime` the ring stays bright before fading (0.3 is a good default).
+pub fn spawn_shockwave(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    assets: &SlashAssets,
+    pos: Vec2,
+    shape: SlashShape,
+    lifetime: f32,
+    hold: f32,
+) {
+    let mesh = meshes.add(Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    ));
+
+    commands.spawn((
+        Mesh2d(mesh.clone()),
+        MeshMaterial2d(assets.material.clone()),
+        // Behind the contact burst but in front of the player sprite.
+        Transform::from_xyz(pos.x, pos.y, 4.0),
+        Shockwave {
+            shape,
+            timer: Timer::from_seconds(lifetime, TimerMode::Once),
+            mesh,
+            hold: hold.clamp(0.0, 0.95),
         },
     ));
 }
@@ -313,6 +374,46 @@ pub fn animate_slashes(
         }
 
         if slash.timer.is_finished() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Fast at first, easing out as the front loses energy.
+fn shockwave_expand(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Drive the pressure wave: expand, thin, cool from white-hot to the base
+/// colour, then fade out.
+pub fn animate_shockwaves(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut waves: Query<(Entity, &mut Shockwave)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    for (entity, mut wave) in &mut waves {
+        wave.timer.tick(time.delta());
+        let t = wave.timer.fraction();
+
+        let shape = SlashShape {
+            radius: wave.shape.radius + wave.shape.grow * shockwave_expand(t),
+            // The band thins as it spreads, like a real pressure front.
+            thickness: (wave.shape.thickness * (1.0 - 0.7 * t)).max(1.5),
+            // White-hot on spawn, settling into the palette colour.
+            hot: 1.0 - smoothstep(0.0, 0.5, t),
+            ..wave.shape
+        };
+
+        // No reveal: the ring is complete immediately.
+        let fade = 1.0 - smoothstep(wave.hold, 1.0, t);
+
+        if let Some(mesh) = meshes.get_mut(&wave.mesh) {
+            *mesh = build_slash_mesh(&shape, 1.0, fade, 1.0);
+        }
+
+        if wave.timer.is_finished() {
             commands.entity(entity).despawn();
         }
     }
@@ -453,6 +554,22 @@ mod tests {
     }
 
     #[test]
+    fn shockwave_front_only_moves_outward() {
+        assert_eq!(shockwave_expand(0.0), 0.0);
+        assert!((shockwave_expand(1.0) - 1.0).abs() < 1e-6);
+
+        let mut previous = 0.0;
+        for step in 0..=10 {
+            let v = shockwave_expand(step as f32 / 10.0);
+            assert!(v >= previous, "front must never move back inward");
+            previous = v;
+        }
+
+        // Ease-out: past halfway in time, most of the distance is covered.
+        assert!(shockwave_expand(0.5) > 0.8);
+    }
+
+    #[test]
     fn mesh_is_valid_across_the_lifecycle() {
         let shapes = [
             SlashShape::slash(),
@@ -460,6 +577,7 @@ mod tests {
             SlashShape::heavy(),
             SlashShape::parry_arc(),
             SlashShape::parry_pop(),
+            SlashShape::shockwave(),
             SlashShape::hit_spark(),
         ];
 

@@ -31,7 +31,7 @@ use crate::grid::{spawn_grid, GridFx, GridMaterial, update_grid};
 use crate::health::{monitor_health, Health};
 use crate::helpers::{setup_fps_counter, show_fps, DoublePressTracker};
 use crate::posture::{recover_posture, Posture};
-use crate::slash::{animate_slashes, setup_slash_assets};
+use crate::slash::{animate_shockwaves, animate_slashes, setup_slash_assets};
 use crate::juice::{apply_camera_shake, apply_hitstop, CombatFeel};
 use crate::fx::{
     advance_hue, apply_background, fx_debug_menu, toggle_fx_menu, FxPalette,
@@ -122,7 +122,7 @@ fn main() {
         .add_systems(Update, (apply_hitstop, apply_camera_shake))
         .add_systems(Update, (advance_hue, apply_background, toggle_fx_menu))
         .add_systems(EguiPrimaryContextPass, fx_debug_menu)
-        .add_systems(Update, animate_slashes)
+        .add_systems(Update, (animate_slashes, animate_shockwaves))
         .add_systems(Update, debug_action)
 
         // Enemy Systems
